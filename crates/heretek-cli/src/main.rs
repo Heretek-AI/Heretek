@@ -58,6 +58,9 @@ pub struct RunArgs {
     /// Apply the shadow result to the working tree if the final gate passes
     #[arg(long)]
     pub apply: bool,
+    /// Run the evidence-only auditor after the gate passes
+    #[arg(long)]
+    pub audit: bool,
 }
 
 #[derive(Args)]
@@ -180,6 +183,7 @@ fn run_agent(args: &RunArgs) -> ExitCode {
         lane: args.lane.clone(),
         max_turns: args.max_turns,
         apply: args.apply,
+        audit: args.audit,
     };
     match heretek_agent::run_session(&repo_root, &args.task, &options) {
         Ok(outcome) => {
@@ -194,6 +198,9 @@ fn run_agent(args: &RunArgs) -> ExitCode {
             println!("  events: {}", outcome.events_path.display());
             if outcome.escalated {
                 println!("  escalated to the deep lane during the session");
+            }
+            if outcome.audit_unresolved {
+                println!("  audit: an objection remained unresolved; the session is not shippable");
             }
             if !outcome.summary.is_empty() {
                 println!("  summary: {}", outcome.summary);

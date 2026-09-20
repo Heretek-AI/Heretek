@@ -100,6 +100,8 @@ pub struct AgentConfig {
     pub max_wall_secs: u64,
     pub escalate: bool,
     pub tool_result_token_budget: usize,
+    pub auditor: bool,
+    pub auditor_max_cycles: u32,
 }
 
 impl Default for AgentConfig {
@@ -109,6 +111,8 @@ impl Default for AgentConfig {
             max_wall_secs: 1800,
             escalate: true,
             tool_result_token_budget: 3000,
+            auditor: false,
+            auditor_max_cycles: 2,
         }
     }
 }

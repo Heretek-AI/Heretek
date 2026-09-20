@@ -61,6 +61,13 @@ pub enum Event {
     ConfigReverted {
         paths: Vec<String>,
     },
+    AuditObjection {
+        frame: String,
+    },
+    AuditCleared,
+    AuditUnavailable {
+        reason: String,
+    },
     Error {
         message: String,
     },

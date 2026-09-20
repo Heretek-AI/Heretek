@@ -12,6 +12,7 @@ const DEFAULT_IGNORES: &[&str] = &[
     "build/",
     "vendor/",
     ".heretek/",
+    ".heretek-audit/",
     ".heretek-shadow.json",
     ".git/",
     "coverage/",

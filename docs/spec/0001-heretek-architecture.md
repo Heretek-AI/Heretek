@@ -389,7 +389,7 @@ What exists in the repository today:
 | 8 Model layer | Implemented: OpenAI-compatible blocking client with retries, lanes, endpoint probing, token and cache accounting. Context tiers are configurable; per-engine cache verification is not yet measured (#7). |
 | 9 Agent loop | Implemented: sandboxed tools, read-before-write (write requires prior read is not enforced yet), repair passes, storm detection, compaction, budgets, escalation, JSONL events. |
 | 10 Decide | Heuristics implemented with reason codes; learned-model promotion is documented in ADR-0005. |
-| 11 Auditor | Not started (#12), deferred by design. |
+| 11 Auditor | Implemented as an opt-in pass (`agent.auditor` / `heretek run --audit`): read-only review of the diff, objections only as executable `node --test` files under `.heretek-audit/`, two-cycle cap, and an unresolved objection fails the session. |
 | 12 Surfaces | CLI, lefthook snippet, MCP server, and `AGENTS.md` consumption are implemented. |
 | 13 Evaluation contract | Runner and fixtures implemented in `eval/`; the public run and the local task suite (#1) are pending. |
 | 14 Security | Sandbox rules, network namespace isolation where available, config protection, and baseline ref validation implemented; see SECURITY.md. |

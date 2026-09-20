@@ -39,7 +39,7 @@ Point `.heretek.toml` at any OpenAI-compatible endpoint (`llama-server`, vLLM, S
 | Surface | Behavior |
 | --- | --- |
 | `heretek gate` | Deterministic pipeline over staged changes or a worktree: tree-sitter syntax, biome formatting, tsgo/tsc typecheck, affected tests, ast-grep structural rules, semgrep secrets/SAST, knip dead code, osv-scanner dependencies. Only new diagnostics block. |
-| `heretek run` | Agent loop in a git-worktree shadow: path-sandboxed tools, tool-call repair, storm detection, context compaction, turn and wall-clock budgets, announced escalation, and gate feedback after every write. Emits a JSONL event stream. |
+| `heretek run` | Agent loop in a git-worktree shadow: path-sandboxed tools, tool-call repair, storm detection, context compaction, turn and wall-clock budgets, announced escalation, gate feedback after every write, and an opt-in evidence-only auditor (`--audit`). Emits a JSONL event stream. |
 | `heretek mcp` | Read-only MCP server exposing `gate_run`, `gate_list`, `report_get`, and `doctor`. |
 | Hooks | `heretek init --lefthook` gates agent and human commits with the same pipeline. |
 

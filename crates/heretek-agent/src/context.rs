@@ -36,6 +36,20 @@ pub fn system_prompt() -> String {
     .join("\n")
 }
 
+pub fn auditor_prompt() -> String {
+    [
+        "You are Heretek's adversarial auditor. You review a candidate change against the original task.",
+        "You may not edit product code. Your only way to raise an objection is to write an executable test that fails against the current workspace.",
+        "Rules:",
+        "1. Read the diff and the relevant files. Hunt for logic regressions, unhandled edge cases, resource leaks, and boundary violations.",
+        "2. If you find a defect, write exactly one test file at .heretek-audit/objection.test.mjs using node:test and node:assert. The test must import the workspace code, assert the correct behavior, and fail now if the defect exists.",
+        "3. The harness runs `node --test` on your file. If it fails, the objection is upheld and the main agent must fix the code. If it passes, the objection is discarded.",
+        "4. If you find no defect, call finish with 'no objection'.",
+        "5. Do not write anything outside .heretek-audit/. Do not modify source files. Do not write tests that assert trivialities.",
+    ]
+    .join("\n")
+}
+
 fn topology(repo_root: &Path) -> String {
     let mut lines = Vec::new();
     lines.push("Workspace topology:".to_string());

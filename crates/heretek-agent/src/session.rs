@@ -6,7 +6,7 @@ use heretek_core::{GateKind, GateReport, HereConfig, Severity, StageReport, Stag
 use heretek_gate::{Baseline, GateContext, Pipeline, ShadowWorkspace, Target, build_pipeline};
 use heretek_model::{ChatRequest, Message, ModelClient, Router, Usage};
 
-use crate::context::{build_zones, compact_tool_result, zone_hash};
+use crate::context::{auditor_prompt, build_zones, compact_tool_result, zone_hash};
 use crate::error::{AgentError, blocking_frames};
 use crate::event::{Event, EventWriter};
 use crate::repair::ToolCallRepair;
@@ -17,6 +17,7 @@ pub struct SessionOptions {
     pub lane: Option<String>,
     pub max_turns: Option<u32>,
     pub apply: bool,
+    pub audit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +25,7 @@ pub struct SessionOutcome {
     pub finished: bool,
     pub passed: bool,
     pub verified: bool,
+    pub audit_unresolved: bool,
     pub turns: u32,
     pub summary: String,
     pub escalated: bool,
@@ -113,6 +115,8 @@ pub fn run_session(
     let mut last_gate_passed = true;
     let mut summary = String::new();
     let mut turn: u32 = 0;
+    let mut audit_cycles: u32 = 0;
+    let mut pending_objection = false;
 
     while turn < max_turns {
         if Instant::now() >= deadline {
@@ -268,13 +272,40 @@ pub fn run_session(
         }
 
         if finished {
-            if !mutated || last_gate_passed {
+            if mutated && !last_gate_passed {
+                finished = false;
+                state.tail.push(Message::user(
+                    "finish was not accepted because the gate is failing. Fix the reported problems, then call finish again.",
+                ));
+            } else if (config.agent.auditor || options.audit)
+                && audit_cycles < config.agent.auditor_max_cycles
+            {
+                match run_auditor(&shadow_root, &config, &state.client, task, &mut events) {
+                    Some(frame) => {
+                        audit_cycles += 1;
+                        finished = false;
+                        pending_objection = true;
+                        events.write(&Event::AuditObjection {
+                            frame: frame.clone(),
+                        });
+                        state.tail.push(Message::user(format!(
+                            "The auditor proved a defect with a failing test. Fix the code so the test passes; do not delete, weaken, or move the test:\n{frame}"
+                        )));
+                    }
+                    None => {
+                        pending_objection = false;
+                        events.write(&Event::AuditCleared);
+                        break;
+                    }
+                }
+            } else {
+                if pending_objection {
+                    events.write(&Event::AuditUnavailable {
+                        reason: format!("objection unresolved after {audit_cycles} audit cycle(s)"),
+                    });
+                }
                 break;
             }
-            finished = false;
-            state.tail.push(Message::user(
-                "finish was not accepted because the gate is failing. Fix the reported problems, then call finish again.",
-            ));
         }
     }
 
@@ -283,7 +314,7 @@ pub fn run_session(
         Some(baseline) => baseline.match_new(final_report),
         None => final_report,
     };
-    let passed = final_report.passed;
+    let passed = final_report.passed && !pending_objection;
     let verified = final_report
         .stages
         .iter()
@@ -322,6 +353,7 @@ pub fn run_session(
         finished,
         passed,
         verified,
+        audit_unresolved: pending_objection,
         turns: turn,
         summary,
         escalated: state.escalated,
@@ -329,6 +361,123 @@ pub fn run_session(
         events_path: events.path().to_path_buf(),
         usage: state.usage,
     })
+}
+
+fn run_auditor(
+    shadow_root: &std::path::Path,
+    config: &HereConfig,
+    client: &ModelClient,
+    task: &str,
+    events: &mut EventWriter,
+) -> Option<String> {
+    let audit_dir = shadow_root.join(".heretek-audit");
+    let diff =
+        heretek_gate::files::git_output(shadow_root, &["diff".to_string(), "HEAD".to_string()])
+            .unwrap_or_default();
+    let diff: String = diff.chars().take(12_000).collect();
+
+    let request = ChatRequest {
+        messages: vec![
+            Message::system(auditor_prompt()),
+            Message::user(format!(
+                "Original task:\n{task}\n\nCandidate diff (truncated to 12k chars):\n{diff}"
+            )),
+        ],
+        tools: ToolBox::definitions(),
+        max_tokens: None,
+        temperature: None,
+    };
+    let response = match client.chat(&request) {
+        Ok(response) => response,
+        Err(error) => {
+            events.write(&Event::AuditUnavailable {
+                reason: error.to_string(),
+            });
+            return None;
+        }
+    };
+    events.write(&Event::ModelResponse {
+        content_chars: response.content.as_deref().map(str::len).unwrap_or(0),
+        tool_calls: response.tool_calls.len(),
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        cached_tokens: response.usage.cached_tokens,
+    });
+
+    let toolbox = ToolBox::new(shadow_root);
+    let (calls, _) =
+        ToolCallRepair::new().repair(response.content.as_deref(), response.tool_calls.clone());
+    for call in calls {
+        match call.name.as_str() {
+            "read_file" | "search" | "list_dir" | "finish" => {
+                let _ = toolbox.dispatch(&call);
+            }
+            "write_file" => {
+                let allowed = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("path")
+                            .and_then(|path| path.as_str())
+                            .map(str::to_string)
+                    })
+                    .map(|path| path.starts_with(".heretek-audit/"))
+                    .unwrap_or(false);
+                if !allowed {
+                    events.write(&Event::AuditUnavailable {
+                        reason: "auditor attempted to write outside .heretek-audit/".to_string(),
+                    });
+                    continue;
+                }
+                let _ = toolbox.dispatch(&call);
+            }
+            other => {
+                events.write(&Event::AuditUnavailable {
+                    reason: format!("auditor called disallowed tool '{other}'"),
+                });
+            }
+        }
+    }
+
+    if !audit_dir.exists() {
+        return None;
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&audit_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map(|ext| ext == "mjs").unwrap_or(false))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    files.sort();
+
+    let spec = heretek_gate::process::ProcessSpec::new("node", shadow_root)
+        .args({
+            let mut args = vec!["--test".to_string()];
+            args.extend(files.iter().map(|file| file.display().to_string()));
+            args
+        })
+        .timeout(std::time::Duration::from_secs(
+            config.gate.stage_timeout_secs.min(300),
+        ))
+        .allow_network(false);
+    let output = match heretek_gate::process::run(&spec) {
+        Ok(output) => output,
+        Err(error) => {
+            events.write(&Event::AuditUnavailable {
+                reason: format!("cannot run node --test: {error}"),
+            });
+            return None;
+        }
+    };
+    if output.success() {
+        let _ = std::fs::remove_dir_all(&audit_dir);
+        return None;
+    }
+    let frame = output.combined();
+    Some(crate::context::compact_tool_result(&frame, 1_200))
 }
 
 fn protect_configs(shadow_root: &std::path::Path) -> Vec<String> {

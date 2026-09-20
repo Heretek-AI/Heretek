@@ -31,6 +31,8 @@ max_turns = 40                  # hard turn cap per session
 max_wall_secs = 1800            # hard wall-clock cap
 escalate = true                 # move to the deep lane after repeated failures
 tool_result_token_budget = 3000 # per tool result before compaction
+auditor = false                 # evidence-only adversarial pass after the gate
+auditor_max_cycles = 2          # objections the generator must resolve
 
 # Any OpenAI-compatible endpoint: llama-server, vLLM, SGLang, Ollama, or remote.
 [models.fast]
