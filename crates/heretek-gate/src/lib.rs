@@ -8,6 +8,6 @@ pub mod stages;
 
 pub use baseline::Baseline;
 pub use pipeline::Pipeline;
-pub use shadow::ShadowWorkspace;
+pub use shadow::{ShadowWorkspace, apply_from, discard};
 pub use stage::{GateContext, GateError, Stage, StageOutcome, Target};
 pub use stages::build_pipeline;

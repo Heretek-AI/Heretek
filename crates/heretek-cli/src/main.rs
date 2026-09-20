@@ -25,12 +25,39 @@ struct Cli {
 enum Command {
     /// Run the deterministic gate pipeline
     Gate(GateArgs),
+    /// Run an agent session against the workspace
+    Run(RunArgs),
     /// Check tooling, network isolation, and configured model endpoints
     Doctor(DoctorArgs),
     /// Write starter configuration and hook files
     Init(InitArgs),
+    /// Apply a persisted shadow result to the working tree
+    Apply(ApplyArgs),
+    /// Remove all persisted shadows and stale worktree registrations
+    Clean,
     /// Run the MCP server on stdio
     Mcp,
+}
+
+#[derive(Args)]
+pub struct ApplyArgs {
+    /// Path to the shadow directory (printed by `heretek run`)
+    pub path: PathBuf,
+}
+
+#[derive(Args)]
+pub struct RunArgs {
+    /// Task description for the agent
+    pub task: String,
+    /// Model lane from .heretek.toml
+    #[arg(long, value_name = "LANE")]
+    pub lane: Option<String>,
+    /// Maximum turns before the session stops
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
+    /// Apply the shadow result to the working tree if the final gate passes
+    #[arg(long)]
+    pub apply: bool,
 }
 
 #[derive(Args)]
@@ -82,9 +109,109 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Gate(args) => run_gate(&args),
+        Command::Run(args) => run_agent(&args),
         Command::Doctor(args) => doctor::run(&args),
         Command::Init(args) => init::run(&args),
+        Command::Apply(args) => run_apply(&args),
+        Command::Clean => run_clean(),
         Command::Mcp => run_mcp(),
+    }
+}
+
+fn run_apply(args: &ApplyArgs) -> ExitCode {
+    let repo_root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("heretek: cannot resolve working directory: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let path = if args.path.is_absolute() {
+        args.path.clone()
+    } else {
+        repo_root.join(&args.path)
+    };
+    match heretek_gate::apply_from(&repo_root, &path) {
+        Ok(()) => {
+            println!("heretek: applied {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("heretek: {error}");
+            ExitCode::from(EXIT_BLOCKED)
+        }
+    }
+}
+
+fn run_clean() -> ExitCode {
+    let repo_root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("heretek: cannot resolve working directory: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let mut removed = 0usize;
+    for base in ["worktrees", "shadow"] {
+        let dir = repo_root.join(".heretek").join(base);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if heretek_gate::discard(&repo_root, &path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    println!("heretek: removed {removed} shadow(s)");
+    ExitCode::SUCCESS
+}
+
+fn run_agent(args: &RunArgs) -> ExitCode {
+    let repo_root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("heretek: cannot resolve working directory: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let options = heretek_agent::SessionOptions {
+        lane: args.lane.clone(),
+        max_turns: args.max_turns,
+        apply: args.apply,
+    };
+    match heretek_agent::run_session(&repo_root, &args.task, &options) {
+        Ok(outcome) => {
+            println!("heretek run: {} turn(s)", outcome.turns);
+            println!(
+                "  tokens: {} prompt, {} completion, {} cached",
+                outcome.usage.prompt_tokens,
+                outcome.usage.completion_tokens,
+                outcome.usage.cached_tokens.unwrap_or(0)
+            );
+            println!("  shadow: {}", outcome.shadow_path.display());
+            println!("  events: {}", outcome.events_path.display());
+            if outcome.escalated {
+                println!("  escalated to the deep lane during the session");
+            }
+            if !outcome.summary.is_empty() {
+                println!("  summary: {}", outcome.summary);
+            }
+            println!(
+                "  final gate: {}",
+                if outcome.passed { "passed" } else { "failed" }
+            );
+            if outcome.finished && outcome.passed {
+                ExitCode::from(EXIT_PASS)
+            } else {
+                ExitCode::from(EXIT_BLOCKED)
+            }
+        }
+        Err(error) => {
+            eprintln!("heretek: {error}");
+            ExitCode::from(EXIT_INTERNAL)
+        }
     }
 }
 

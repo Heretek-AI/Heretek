@@ -19,4 +19,5 @@ heretek-core.workspace = true
 heretek-gate.workspace = true
 heretek-model.workspace = true
 heretek-mcp.workspace = true
+heretek-agent.workspace = true
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "time"] }

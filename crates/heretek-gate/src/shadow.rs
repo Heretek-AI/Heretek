@@ -144,10 +144,12 @@ impl ShadowWorkspace {
                 message: "diff is not supported for non-git workspaces".to_string(),
             });
         }
+        git_output(&self.path, &["add".to_string(), "-A".to_string()])?;
         git_output(
             &self.path,
             &[
                 "diff".to_string(),
+                "--cached".to_string(),
                 "--binary".to_string(),
                 self.base.clone(),
             ],
@@ -186,6 +188,85 @@ impl ShadowWorkspace {
     }
 
     pub fn cleanup(self) {}
+
+    pub fn persist(self) -> PathBuf {
+        let path = self.path.clone();
+        if self.git {
+            let metadata = serde_json::json!({
+                "repo_root": self.repo_root.display().to_string(),
+                "base": self.base,
+            });
+            let _ = std::fs::write(
+                path.join(SHADOW_METADATA),
+                serde_json::to_string_pretty(&metadata).unwrap_or_default(),
+            );
+        }
+        std::mem::forget(self);
+        path
+    }
+}
+
+pub const SHADOW_METADATA: &str = ".heretek-shadow.json";
+
+pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError> {
+    if !shadow_path.exists() {
+        return Err(GateError::Failed {
+            message: format!("shadow not found: {}", shadow_path.display()),
+        });
+    }
+    let metadata_path = shadow_path.join(SHADOW_METADATA);
+    let metadata: serde_json::Value = std::fs::read_to_string(&metadata_path)
+        .map_err(GateError::Io)
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|error| GateError::Failed {
+                message: format!("invalid shadow metadata: {error}"),
+            })
+        })?;
+    let base = metadata
+        .get("base")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| GateError::Failed {
+            message: "shadow metadata is missing the base revision".to_string(),
+        })?;
+    crate::files::valid_ref(base)?;
+    let _ = git_output(shadow_path, &["add".to_string(), "-A".to_string()])?;
+    let patch = git_output(
+        shadow_path,
+        &[
+            "diff".to_string(),
+            "--cached".to_string(),
+            "--binary".to_string(),
+            base.to_string(),
+        ],
+    )?;
+    if patch.trim().is_empty() {
+        return Err(GateError::Failed {
+            message: "shadow contains no changes".to_string(),
+        });
+    }
+    git_apply(repo_root, &patch)
+}
+
+pub fn discard(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError> {
+    if !shadow_path.exists() {
+        return Ok(());
+    }
+    if is_git_repo(shadow_path) {
+        let _ = git_output(
+            repo_root,
+            &[
+                "worktree".to_string(),
+                "remove".to_string(),
+                "--force".to_string(),
+                shadow_path.display().to_string(),
+            ],
+        );
+        let _ = git_output(repo_root, &["worktree".to_string(), "prune".to_string()]);
+    }
+    if shadow_path.exists() {
+        std::fs::remove_dir_all(shadow_path)?;
+    }
+    Ok(())
 }
 
 impl Drop for ShadowWorkspace {
