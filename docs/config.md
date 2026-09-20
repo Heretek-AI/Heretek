@@ -6,6 +6,9 @@ optional; unknown fields are rejected so typos fail loudly. Run
 endpoints.
 
 ```toml
+# Optional: names the default lane. Must match a [models.*] key.
+default_lane = "fast"
+
 [gate]
 baseline = "origin/main"        # optional default baseline ref (validated)
 stage_timeout_secs = 300        # per stage, 1..=900 for typecheck
@@ -53,9 +56,11 @@ lane = "micro"
 base_url = "http://127.0.0.1:8080/v1"
 model = "qwen3.5-4b"
 context_tokens = 8192
-
-default_lane = "fast"           # optional; defaults to "fast" when present
 ```
+
+`context_tokens` sizes the tool-result compaction cap for that lane (roughly a
+twelfth of the window, or the `agent.tool_result_token_budget`, whichever is
+smaller), so long tool output does not overflow the endpoint.
 
 ## Semantics worth knowing
 
@@ -66,9 +71,15 @@ default_lane = "fast"           # optional; defaults to "fast" when present
   exactly what a commit would contain, not the working tree.
 - **Hook mode never mutates.** Formatting findings become warnings; auto-fix
   (`--fix`) is only honored for worktree targets.
-- **Missing tools are loud.** A blocking stage skipped because its tool is
-  absent produces a top-level warning, and `heretek run` reports whether any
-  blocking stage actually ran.
+- **Missing tools are loud, and unverified runs fail.** A blocking stage
+  skipped because its tool is absent produces a top-level warning.
+  `heretek gate` exits 1 unless at least one blocking stage actually ran on the
+  gateable changed files (or no gateable files changed), and `heretek run`
+  refuses `--apply` in the same case.
+- **The auditor executes only sandboxed tests.** When `--audit` is enabled,
+  `node --permission --allow-fs-read/-write=<shadow>` runs the auditor's
+  `node:test` files. If the runtime cannot execute them, the session fails
+  rather than clearing the audit.
 - **Harness-owned configs.** tsconfig, biome, sgconfig, semgrep, vitest, and
   jest configs are restored from HEAD inside the shadow before each gate run.
 - **Network.** Gate subprocesses run in an unprivileged network namespace when

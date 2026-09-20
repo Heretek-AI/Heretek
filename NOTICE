@@ -23,8 +23,9 @@ with attribution, not copied:
   research document, not embedded code.
 - **tree-sitter** (MIT), **Biome** (MIT), **ast-grep** (MIT), **Semgrep**
   (LGPL-2.1), **knip** (ISC), **OSV-Scanner** (Apache-2.0), **vitest** (MIT),
-  **TypeScript / tsgo** (Apache-2.0), **ruff** (MIT), **ty** (MIT): used as
-  subprocess tools or libraries under their own licenses.
+  **TypeScript / tsgo** (Apache-2.0): used as a subprocess tool.
+  Python stages (ruff, ty, vulture) are planned, not implemented; they are not
+  dependencies today.
 - **Model Context Protocol Rust SDK** (`rmcp`, MIT, modelcontextprotocol):
   MCP server implementation.
 - **Qwen** (Apache-2.0, Alibaba): default reference models; no weights are

@@ -28,8 +28,10 @@ Controls in place:
 - Harness-owned tool configuration (tsconfig, biome, sgconfig, semgrep, test
   runner configs) is restored from HEAD before every gate run so a model cannot
   disable verification by rewriting config.
-- No telemetry. Network access is limited to dependency and model downloads,
-  and OSV lookups for the dependency stage.
+- Auditor tests run under `node --permission` with filesystem access limited
+  to the shadow worktree, inside the same network namespace as other stages.
+- Unverified runs fail: `heretek gate` exits non-zero and `heretek run` refuses
+  `--apply` when no blocking stage ran on the changed files.
 
 Known limits to evaluate before deploying:
 

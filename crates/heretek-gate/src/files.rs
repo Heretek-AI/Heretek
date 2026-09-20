@@ -52,28 +52,38 @@ pub fn changed_files(ctx: &GateContext) -> Result<Vec<String>, GateError> {
             }
         },
         Target::Worktree(path) => {
-            let mut args = vec![
-                "diff".to_string(),
-                "--name-only".to_string(),
-                "-z".to_string(),
-            ];
             if let Some(baseline) = &ctx.baseline {
-                args.push(baseline.clone());
-                args.push("--".to_string());
+                files.extend(nul_to_paths(&git_output(
+                    path,
+                    &[
+                        "diff".to_string(),
+                        "--name-only".to_string(),
+                        "-z".to_string(),
+                        baseline.clone(),
+                        "--".to_string(),
+                    ],
+                )?));
+                files.extend(nul_to_paths(&git_output(
+                    path,
+                    &[
+                        "ls-files".to_string(),
+                        "-z".to_string(),
+                        "--others".to_string(),
+                        "--exclude-standard".to_string(),
+                    ],
+                )?));
+            } else {
+                files.extend(nul_to_paths(&git_output(
+                    path,
+                    &[
+                        "ls-files".to_string(),
+                        "-z".to_string(),
+                        "--cached".to_string(),
+                        "--others".to_string(),
+                        "--exclude-standard".to_string(),
+                    ],
+                )?));
             }
-            if ctx.baseline.is_some() {
-                files.extend(nul_to_paths(&git_output(path, &args)?));
-            }
-            files.extend(nul_to_paths(&git_output(
-                path,
-                &[
-                    "ls-files".to_string(),
-                    "-z".to_string(),
-                    "--cached".to_string(),
-                    "--others".to_string(),
-                    "--exclude-standard".to_string(),
-                ],
-            )?));
         }
     }
 

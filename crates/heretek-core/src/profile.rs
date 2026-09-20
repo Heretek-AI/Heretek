@@ -10,6 +10,7 @@ pub enum Lane {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     #[serde(default)]
     pub lane: Lane,

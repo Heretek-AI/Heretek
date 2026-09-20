@@ -78,12 +78,18 @@ impl Baseline {
 
 pub fn fingerprint(diagnostic: &Diagnostic) -> String {
     let code = diagnostic.code.clone().unwrap_or_default();
+    let context = diagnostic
+        .context
+        .first()
+        .map(|line| normalize(line))
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         diagnostic.gate,
         code,
         diagnostic.file,
-        normalize(&diagnostic.message)
+        normalize(&diagnostic.message),
+        context
     )
 }
 

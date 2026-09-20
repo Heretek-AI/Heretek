@@ -53,7 +53,7 @@ impl Stage for SyntaxStage {
             let Some(tree) = parser.parse(source.as_bytes(), None) else {
                 continue;
             };
-            diagnostics.extend(collect_diagnostics(file, tree.root_node()));
+            diagnostics.extend(collect_diagnostics(file, tree.root_node(), &source));
         }
 
         if diagnostics.is_empty() {
@@ -74,7 +74,7 @@ fn language_for(file: &str) -> Option<Language> {
     }
 }
 
-fn collect_diagnostics(file: &str, root: Node<'_>) -> Vec<Diagnostic> {
+fn collect_diagnostics(file: &str, root: Node<'_>, source: &str) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -82,7 +82,7 @@ fn collect_diagnostics(file: &str, root: Node<'_>) -> Vec<Diagnostic> {
             break;
         }
         if node.is_error() || node.is_missing() {
-            diagnostics.push(node_diagnostic(file, &node));
+            diagnostics.push(node_diagnostic(file, &node, source));
         }
         for index in (0..node.child_count()).rev() {
             if let Some(child) = node.child(index as u32) {
@@ -93,7 +93,7 @@ fn collect_diagnostics(file: &str, root: Node<'_>) -> Vec<Diagnostic> {
     diagnostics
 }
 
-fn node_diagnostic(file: &str, node: &Node<'_>) -> Diagnostic {
+fn node_diagnostic(file: &str, node: &Node<'_>, source: &str) -> Diagnostic {
     let position = node.start_position();
     let message = if node.is_missing() {
         format!("missing token: {}", node.kind())
@@ -109,5 +109,8 @@ fn node_diagnostic(file: &str, node: &Node<'_>) -> Diagnostic {
         message,
     );
     diagnostic.code = Some("syntax".to_string());
+    if let Some(line) = source.lines().nth(position.row) {
+        diagnostic = diagnostic.with_context(vec![line.trim().to_string()]);
+    }
     diagnostic
 }

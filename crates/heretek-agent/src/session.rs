@@ -45,6 +45,7 @@ struct SessionState {
 }
 
 const PROTECTED_CONFIG_PREFIXES: &[&str] = &[
+    ".heretek.toml",
     "tsconfig",
     "biome.json",
     "biome.jsonc",
@@ -99,7 +100,13 @@ pub fn run_session(
     let deadline = Instant::now() + std::time::Duration::from_secs(config.agent.max_wall_secs);
     let tools = ToolBox::definitions();
     let toolbox = ToolBox::new(&shadow_root);
-    let tool_budget = config.agent.tool_result_token_budget.max(200) * 4;
+    let context_cap = config
+        .models
+        .get(&lane)
+        .and_then(|profile| profile.context_tokens)
+        .map(|tokens| tokens as usize * 4 / 12)
+        .unwrap_or(usize::MAX);
+    let tool_budget = (config.agent.tool_result_token_budget.max(200) * 4).min(context_cap);
 
     let mut state = SessionState {
         client,
@@ -281,7 +288,7 @@ pub fn run_session(
                 && audit_cycles < config.agent.auditor_max_cycles
             {
                 match run_auditor(&shadow_root, &config, &state.client, task, &mut events) {
-                    Some(frame) => {
+                    AuditResult::Objection(frame) => {
                         audit_cycles += 1;
                         finished = false;
                         pending_objection = true;
@@ -292,9 +299,16 @@ pub fn run_session(
                             "The auditor proved a defect with a failing test. Fix the code so the test passes; do not delete, weaken, or move the test:\n{frame}"
                         )));
                     }
-                    None => {
+                    AuditResult::Cleared => {
                         pending_objection = false;
                         events.write(&Event::AuditCleared);
+                        break;
+                    }
+                    AuditResult::Unavailable(reason) => {
+                        pending_objection = true;
+                        events.write(&Event::AuditUnavailable {
+                            reason: reason.clone(),
+                        });
                         break;
                     }
                 }
@@ -314,7 +328,15 @@ pub fn run_session(
         Some(baseline) => baseline.match_new(final_report),
         None => final_report,
     };
-    let passed = final_report.passed && !pending_objection;
+    let changed = heretek_gate::files::changed_files(&GateContext::new(
+        repo_root,
+        Target::Worktree(shadow_root.clone()),
+    ))
+    .unwrap_or_default();
+    let verification = heretek_gate::verification(&final_report, &changed);
+    let passed = final_report.passed
+        && verification != heretek_gate::Verification::Unverified
+        && !pending_objection;
     let verified = final_report
         .stages
         .iter()
@@ -363,13 +385,19 @@ pub fn run_session(
     })
 }
 
+enum AuditResult {
+    Cleared,
+    Objection(String),
+    Unavailable(String),
+}
+
 fn run_auditor(
     shadow_root: &std::path::Path,
     config: &HereConfig,
     client: &ModelClient,
     task: &str,
     events: &mut EventWriter,
-) -> Option<String> {
+) -> AuditResult {
     let audit_dir = shadow_root.join(".heretek-audit");
     let diff =
         heretek_gate::files::git_output(shadow_root, &["diff".to_string(), "HEAD".to_string()])
@@ -393,7 +421,7 @@ fn run_auditor(
             events.write(&Event::AuditUnavailable {
                 reason: error.to_string(),
             });
-            return None;
+            return AuditResult::Unavailable(error.to_string());
         }
     };
     events.write(&Event::ModelResponse {
@@ -440,22 +468,25 @@ fn run_auditor(
     }
 
     if !audit_dir.exists() {
-        return None;
+        return AuditResult::Cleared;
     }
     let mut files: Vec<PathBuf> = std::fs::read_dir(&audit_dir)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().map(|ext| ext == "mjs").unwrap_or(false))
-        .collect();
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    files.retain(|path| path.extension().map(|ext| ext == "mjs").unwrap_or(false));
     if files.is_empty() {
-        return None;
+        return AuditResult::Cleared;
     }
     files.sort();
 
     let spec = heretek_gate::process::ProcessSpec::new("node", shadow_root)
         .args({
-            let mut args = vec!["--test".to_string()];
+            let mut args = vec![
+                "--permission".to_string(),
+                format!("--allow-fs-read={}", shadow_root.display()),
+                format!("--allow-fs-write={}", shadow_root.display()),
+                "--test".to_string(),
+            ];
             args.extend(files.iter().map(|file| file.display().to_string()));
             args
         })
@@ -466,18 +497,19 @@ fn run_auditor(
     let output = match heretek_gate::process::run(&spec) {
         Ok(output) => output,
         Err(error) => {
+            let reason = format!("cannot run node --test: {error}");
             events.write(&Event::AuditUnavailable {
-                reason: format!("cannot run node --test: {error}"),
+                reason: reason.clone(),
             });
-            return None;
+            return AuditResult::Unavailable(reason);
         }
     };
     if output.success() {
         let _ = std::fs::remove_dir_all(&audit_dir);
-        return None;
+        return AuditResult::Cleared;
     }
     let frame = output.combined();
-    Some(crate::context::compact_tool_result(&frame, 1_200))
+    AuditResult::Objection(crate::context::compact_tool_result(&frame, 1_200))
 }
 
 fn protect_configs(shadow_root: &std::path::Path) -> Vec<String> {

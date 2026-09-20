@@ -287,6 +287,8 @@ fn run_gate(args: &GateArgs) -> ExitCode {
         }
     }
 
+    let verification = heretek_gate::verification(&report, &ctx.files);
+
     match args.format {
         OutputFormat::Json => match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),
@@ -295,10 +297,23 @@ fn run_gate(args: &GateArgs) -> ExitCode {
                 return ExitCode::from(EXIT_INTERNAL);
             }
         },
-        OutputFormat::Text => print_text_report(&report, &pipeline),
+        OutputFormat::Text => {
+            print_text_report(&report, &pipeline);
+            match verification {
+                heretek_gate::Verification::Verified => {
+                    println!("verification: at least one blocking stage ran")
+                }
+                heretek_gate::Verification::NotApplicable => {
+                    println!("verification: no gateable files changed")
+                }
+                heretek_gate::Verification::Unverified => {
+                    println!("verification: UNVERIFIED; no blocking stage ran on the changed files")
+                }
+            }
+        }
     }
 
-    if report.passed {
+    if report.passed && verification != heretek_gate::Verification::Unverified {
         ExitCode::from(EXIT_PASS)
     } else {
         ExitCode::from(EXIT_BLOCKED)

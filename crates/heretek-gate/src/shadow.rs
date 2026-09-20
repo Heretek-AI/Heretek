@@ -238,9 +238,6 @@ pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError>
         .get("mode")
         .and_then(|value| value.as_str())
         .unwrap_or("git");
-    if mode == "copy" {
-        return copy_tree(shadow_path, repo_root);
-    }
     let recorded_root = metadata
         .get("repo_root")
         .and_then(|value| value.as_str())
@@ -259,6 +256,9 @@ pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError>
                 actual.display()
             ),
         });
+    }
+    if mode == "copy" {
+        return copy_tree(shadow_path, repo_root);
     }
     let base = metadata
         .get("base")
@@ -366,7 +366,8 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), GateError> {
         let entry = entry?;
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        if name == ".git" || name == ".heretek" || name == "node_modules" {
+        if name == ".git" || name == ".heretek" || name == "node_modules" || name == SHADOW_METADATA
+        {
             continue;
         }
         let from = entry.path();

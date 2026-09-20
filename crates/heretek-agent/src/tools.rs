@@ -196,7 +196,7 @@ impl ToolBox {
             Ok(path) => path,
             Err(message) => return error(&message),
         };
-        if let Err(message) = self.check_write(path.strip_prefix(&self.root).unwrap_or(&path)) {
+        if let Err(message) = self.check_write(&path) {
             return error(&message);
         }
         if let Some(parent) = path.parent()
@@ -232,7 +232,7 @@ impl ToolBox {
             Ok(path) => path,
             Err(message) => return error(&message),
         };
-        if let Err(message) = self.check_write(path.strip_prefix(&self.root).unwrap_or(&path)) {
+        if let Err(message) = self.check_write(&path) {
             return error(&message);
         }
         let content = match std::fs::read_to_string(&path) {
@@ -308,7 +308,18 @@ impl ToolBox {
         }
     }
 
-    fn check_write(&self, relative: &std::path::Path) -> Result<(), String> {
+    fn check_write(&self, requested: &std::path::Path) -> Result<(), String> {
+        let resolved = match requested.canonicalize() {
+            Ok(path) => path,
+            Err(_) => requested
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .map(|parent| parent.join(requested.file_name().unwrap_or_default()))
+                .unwrap_or_else(|| requested.to_path_buf()),
+        };
+        let relative = resolved
+            .strip_prefix(&self.canonical_root)
+            .unwrap_or(&resolved);
         let first = relative
             .components()
             .find_map(|component| match component {
@@ -319,6 +330,11 @@ impl ToolBox {
         match self.mode {
             ToolMode::Generator if first == ".heretek-audit" => {
                 Err("path is owned by the auditor and cannot be modified".to_string())
+            }
+            ToolMode::Generator
+                if first == ".heretek.toml" && relative.components().count() == 1 =>
+            {
+                Err("the harness configuration is read-only for the agent".to_string())
             }
             ToolMode::Auditor if first != ".heretek-audit" => {
                 Err("the auditor may only write under .heretek-audit/".to_string())
@@ -353,17 +369,20 @@ impl ToolBox {
         if !joined.starts_with(&self.root) {
             return Err("path escapes the workspace".to_string());
         }
-        let existing = if joined.exists() {
-            joined.canonicalize().ok()
-        } else {
-            joined
-                .parent()
-                .and_then(|parent| parent.canonicalize().ok())
-        };
-        if let Some(existing) = existing
-            && !existing.starts_with(&self.canonical_root)
-        {
-            return Err("path resolves outside the workspace".to_string());
+        let mut current = self.root.clone();
+        for component in normalized.components() {
+            current.push(component);
+            let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+                break;
+            };
+            if metadata.file_type().is_symlink() {
+                let resolved = current
+                    .canonicalize()
+                    .map_err(|_| "path traverses a dangling symlink".to_string())?;
+                if !resolved.starts_with(&self.canonical_root) {
+                    return Err("path resolves outside the workspace".to_string());
+                }
+            }
         }
         Ok(joined)
     }

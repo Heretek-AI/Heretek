@@ -34,12 +34,37 @@ heretek clean
 
 Point `.heretek.toml` at any OpenAI-compatible endpoint (`llama-server`, vLLM, SGLang, Ollama, or a remote host). See [`docs/config.md`](docs/config.md).
 
+### Install and provision
+
+```sh
+cargo install --path crates/heretek-cli     # puts `heretek` on PATH
+```
+
+The gate engine shells out to project tooling. Missing tools are reported
+loudly and cause unverified runs to fail, so install what your repositories
+use:
+
+| Stage | Tool | Install |
+| --- | --- | --- |
+| syntax | tree-sitter | bundled (built into the binary) |
+| format | Biome | `pnpm add -D @biomejs/biome` in the repo |
+| typecheck | tsgo or tsc | `pnpm add -D @typescript/native-preview` or `typescript` |
+| tests | vitest or jest | `pnpm add -D vitest` (or jest) |
+| ast-grep | ast-grep | `cargo install ast-grep` and add `sgconfig.yml` |
+| secrets + SAST | Semgrep | `pipx install semgrep` (or `brew install semgrep`) |
+| dead code | knip | `pnpm add -D knip` |
+| deps | osv-scanner | `go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest` |
+
+`heretek doctor` lists what is present and what is missing. Run it before the
+first gate; a green `heretek gate` on a machine with no tools installed is
+reported as unverified and exits non-zero.
+
 ## What it does
 
 | Surface | Behavior |
 | --- | --- |
 | `heretek gate` | Deterministic pipeline over staged changes or a worktree: tree-sitter syntax, biome formatting, tsgo/tsc typecheck, affected tests, ast-grep structural rules, semgrep secrets/SAST, knip dead code, osv-scanner dependencies. Only new diagnostics block. |
-| `heretek run` | Agent loop in a git-worktree shadow: path-sandboxed tools, tool-call repair, storm detection, context compaction, turn and wall-clock budgets, announced escalation, gate feedback after every write, and an opt-in evidence-only auditor (`--audit`). Emits a JSONL event stream. |
+| `heretek run` | Agent loop in a git-worktree shadow: path-sandboxed tools, tool-call repair, storm detection, context compaction, turn and wall-clock budgets, announced escalation, gate feedback after every write, and an opt-in evidence-only auditor (`--audit`) whose objections are executable tests, validated under `node --permission`. Emits a JSONL event stream. |
 | `heretek mcp` | Read-only MCP server exposing `gate_run`, `gate_list`, `report_get`, and `doctor`. |
 | Hooks | `heretek init --lefthook` gates agent and human commits with the same pipeline. |
 
