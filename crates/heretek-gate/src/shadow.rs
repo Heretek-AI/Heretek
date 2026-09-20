@@ -144,7 +144,17 @@ impl ShadowWorkspace {
                 message: "diff is not supported for non-git workspaces".to_string(),
             });
         }
-        git_output(&self.path, &["add".to_string(), "-A".to_string()])?;
+        let exclude = format!(":(exclude){SHADOW_METADATA}");
+        git_output(
+            &self.path,
+            &[
+                "add".to_string(),
+                "-A".to_string(),
+                "--".to_string(),
+                ".".to_string(),
+                exclude.clone(),
+            ],
+        )?;
         git_output(
             &self.path,
             &[
@@ -152,6 +162,9 @@ impl ShadowWorkspace {
                 "--cached".to_string(),
                 "--binary".to_string(),
                 self.base.clone(),
+                "--".to_string(),
+                ".".to_string(),
+                exclude,
             ],
         )
     }
@@ -191,16 +204,15 @@ impl ShadowWorkspace {
 
     pub fn persist(self) -> PathBuf {
         let path = self.path.clone();
-        if self.git {
-            let metadata = serde_json::json!({
-                "repo_root": self.repo_root.display().to_string(),
-                "base": self.base,
-            });
-            let _ = std::fs::write(
-                path.join(SHADOW_METADATA),
-                serde_json::to_string_pretty(&metadata).unwrap_or_default(),
-            );
-        }
+        let metadata = serde_json::json!({
+            "repo_root": self.repo_root.display().to_string(),
+            "base": self.base,
+            "mode": if self.git { "git" } else { "copy" },
+        });
+        let _ = std::fs::write(
+            path.join(SHADOW_METADATA),
+            serde_json::to_string_pretty(&metadata).unwrap_or_default(),
+        );
         std::mem::forget(self);
         path
     }
@@ -222,6 +234,32 @@ pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError>
                 message: format!("invalid shadow metadata: {error}"),
             })
         })?;
+    let mode = metadata
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("git");
+    if mode == "copy" {
+        return copy_tree(shadow_path, repo_root);
+    }
+    let recorded_root = metadata
+        .get("repo_root")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let recorded = Path::new(recorded_root)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(recorded_root));
+    let actual = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    if recorded != actual {
+        return Err(GateError::Failed {
+            message: format!(
+                "shadow belongs to {} and cannot be applied to {}",
+                recorded.display(),
+                actual.display()
+            ),
+        });
+    }
     let base = metadata
         .get("base")
         .and_then(|value| value.as_str())
@@ -229,7 +267,17 @@ pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError>
             message: "shadow metadata is missing the base revision".to_string(),
         })?;
     crate::files::valid_ref(base)?;
-    let _ = git_output(shadow_path, &["add".to_string(), "-A".to_string()])?;
+    let exclude = format!(":(exclude){SHADOW_METADATA}");
+    let _ = git_output(
+        shadow_path,
+        &[
+            "add".to_string(),
+            "-A".to_string(),
+            "--".to_string(),
+            ".".to_string(),
+            exclude.clone(),
+        ],
+    )?;
     let patch = git_output(
         shadow_path,
         &[
@@ -237,6 +285,9 @@ pub fn apply_from(repo_root: &Path, shadow_path: &Path) -> Result<(), GateError>
             "--cached".to_string(),
             "--binary".to_string(),
             base.to_string(),
+            "--".to_string(),
+            ".".to_string(),
+            exclude,
         ],
     )?;
     if patch.trim().is_empty() {

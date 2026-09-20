@@ -12,6 +12,7 @@ const DEFAULT_IGNORES: &[&str] = &[
     "build/",
     "vendor/",
     ".heretek/",
+    ".heretek-shadow.json",
     ".git/",
     "coverage/",
 ];
@@ -130,7 +131,9 @@ fn matches_pattern(path: &str, pattern: &str) -> bool {
     if pattern.contains('*') {
         return wildcard_match(path, pattern);
     }
-    path == pattern || path.ends_with(pattern) || path.contains(pattern)
+    path == pattern
+        || path.starts_with(&format!("{pattern}/"))
+        || path.split('/').any(|segment| segment == pattern)
 }
 
 fn wildcard_match(text: &str, pattern: &str) -> bool {

@@ -55,11 +55,13 @@ impl ToolCallRepair {
     }
 
     pub fn is_storm(&mut self, call: &ToolCall) -> bool {
-        let signature = format!(
-            "{}|{}",
-            call.name,
-            call.arguments.chars().take(200).collect::<String>()
-        );
+        if matches!(call.name.as_str(), "read_file" | "list_dir" | "search") {
+            return false;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&call.name, &mut hasher);
+        std::hash::Hash::hash(&call.arguments, &mut hasher);
+        let signature = format!("{:x}", std::hash::Hasher::finish(&hasher));
         self.recent.push_back(signature.clone());
         while self.recent.len() > 10 {
             self.recent.pop_front();

@@ -58,6 +58,9 @@ pub enum Event {
         passed: bool,
         turns: u32,
     },
+    ConfigReverted {
+        paths: Vec<String>,
+    },
     Error {
         message: String,
     },
@@ -66,6 +69,7 @@ pub enum Event {
 pub struct EventWriter {
     path: PathBuf,
     file: Option<std::fs::File>,
+    first_error: Option<String>,
 }
 
 impl EventWriter {
@@ -79,6 +83,7 @@ impl EventWriter {
         Ok(Self {
             path,
             file: Some(file),
+            first_error: None,
         })
     }
 
@@ -86,13 +91,26 @@ impl EventWriter {
         &self.path
     }
 
+    pub fn take_error(&mut self) -> Option<String> {
+        self.first_error.take()
+    }
+
     pub fn write(&mut self, event: &Event) {
         use std::io::Write;
         let Some(file) = self.file.as_mut() else {
             return;
         };
-        if let Ok(line) = serde_json::to_string(event) {
-            let _ = writeln!(file, "{line}");
+        let line = match serde_json::to_string(event) {
+            Ok(line) => line,
+            Err(error) => {
+                self.first_error.get_or_insert_with(|| error.to_string());
+                return;
+            }
+        };
+        if let Err(error) = writeln!(file, "{line}")
+            && self.first_error.is_none()
+        {
+            self.first_error = Some(error.to_string());
         }
     }
 }

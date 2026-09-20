@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use heretek_core::HereConfig;
+use heretek_core::{GateKind, GateReport, HereConfig, Severity, StageReport, StageStatus};
 use heretek_gate::{Baseline, GateContext, Pipeline, ShadowWorkspace, Target, build_pipeline};
 use heretek_model::{ChatRequest, Message, ModelClient, Router, Usage};
 
@@ -23,6 +23,7 @@ pub struct SessionOptions {
 pub struct SessionOutcome {
     pub finished: bool,
     pub passed: bool,
+    pub verified: bool,
     pub turns: u32,
     pub summary: String,
     pub escalated: bool,
@@ -40,6 +41,17 @@ struct SessionState {
     consecutive_failures: u32,
     usage: Usage,
 }
+
+const PROTECTED_CONFIG_PREFIXES: &[&str] = &[
+    "tsconfig",
+    "biome.json",
+    "biome.jsonc",
+    "sgconfig.yml",
+    "semgrep.yml",
+    ".semgrep.yml",
+    "vitest.config.",
+    "jest.config.",
+];
 
 pub fn run_session(
     repo_root: &std::path::Path,
@@ -98,6 +110,7 @@ pub fn run_session(
     };
 
     let mut finished = false;
+    let mut last_gate_passed = true;
     let mut summary = String::new();
     let mut turn: u32 = 0;
 
@@ -116,7 +129,8 @@ pub fn run_session(
             zone2_hash,
         });
 
-        compact_tail(&mut state.tail, tool_budget);
+        let cutoff = state.tail.len();
+        compact_tail(&mut state.tail[..cutoff], tool_budget);
 
         let mut messages = Vec::with_capacity(state.tail.len() + 1);
         messages.push(system_message.clone());
@@ -203,12 +217,30 @@ pub fn run_session(
             }
         }
 
+        if Instant::now() >= deadline {
+            events.write(&Event::Error {
+                message: "wall-clock budget exhausted before verification".to_string(),
+            });
+            break;
+        }
+
         if mutated {
+            let reverted = protect_configs(&shadow_root);
+            if !reverted.is_empty() {
+                events.write(&Event::ConfigReverted {
+                    paths: reverted.clone(),
+                });
+                state.tail.push(Message::user(format!(
+                    "These configuration files are harness-owned and were restored to their original contents: {}. Do not edit them again.",
+                    reverted.join(", ")
+                )));
+            }
             let report = run_gate(repo_root, &pipeline, &shadow_root, &config);
             let report = match &baseline {
                 Some(baseline) => baseline.match_new(report),
                 None => report,
             };
+            last_gate_passed = report.passed;
             events.write(&Event::GateRun {
                 passed: report.passed,
                 new_diagnostics: report.new_diagnostic_count(),
@@ -236,7 +268,13 @@ pub fn run_session(
         }
 
         if finished {
-            break;
+            if !mutated || last_gate_passed {
+                break;
+            }
+            finished = false;
+            state.tail.push(Message::user(
+                "finish was not accepted because the gate is failing. Fix the reported problems, then call finish again.",
+            ));
         }
     }
 
@@ -246,6 +284,10 @@ pub fn run_session(
         None => final_report,
     };
     let passed = final_report.passed;
+    let verified = final_report
+        .stages
+        .iter()
+        .any(|stage| stage.kind == GateKind::Blocking && stage.status == StageStatus::Passed);
 
     events.write(&Event::Finished {
         summary: summary.clone(),
@@ -253,23 +295,72 @@ pub fn run_session(
         turns: turn,
     });
 
-    if options.apply && passed {
-        shadow.apply_to(repo_root)?;
-        shadow.cleanup();
+    if let Some(error) = events.take_error() {
+        eprintln!("heretek: event stream write failed: {error}");
+    }
+
+    let shadow_path;
+    if options.apply && passed && finished {
+        match shadow.apply_to(repo_root) {
+            Ok(()) => {
+                shadow_path = shadow.persist();
+                heretek_gate::discard(repo_root, &shadow_path).ok();
+            }
+            Err(error) => {
+                let path = shadow.persist();
+                return Err(AgentError::Session(format!(
+                    "apply failed: {error}; the shadow was preserved at {}",
+                    path.display()
+                )));
+            }
+        }
     } else {
-        shadow.persist();
+        shadow_path = shadow.persist();
     }
 
     Ok(SessionOutcome {
         finished,
         passed,
+        verified,
         turns: turn,
         summary,
         escalated: state.escalated,
-        shadow_path: shadow_root,
+        shadow_path,
         events_path: events.path().to_path_buf(),
         usage: state.usage,
     })
+}
+
+fn protect_configs(shadow_root: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .current_dir(shadow_root)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    let changed = String::from_utf8_lossy(&output.stdout);
+    let mut reverted = Vec::new();
+    for file in changed.lines() {
+        let name = file.rsplit('/').next().unwrap_or(file);
+        let protected = PROTECTED_CONFIG_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix));
+        if !protected {
+            continue;
+        }
+        let checkout = std::process::Command::new("git")
+            .args(["checkout", "HEAD", "--", file])
+            .current_dir(shadow_root)
+            .output();
+        if checkout
+            .map(|result| result.status.success())
+            .unwrap_or(false)
+        {
+            reverted.push(file.to_string());
+        }
+    }
+    reverted
 }
 
 fn maybe_escalate(
@@ -331,14 +422,37 @@ fn run_gate(
     pipeline: &Pipeline,
     shadow_root: &std::path::Path,
     config: &HereConfig,
-) -> heretek_core::GateReport {
+) -> GateReport {
     let ctx = GateContext::new(repo_root, Target::Worktree(shadow_root.to_path_buf()))
         .with_config(Arc::new(config.gate.clone()))
         .with_baseline(Some("HEAD".to_string()))
         .with_fix(true);
-    let files = heretek_gate::files::changed_files(&ctx).unwrap_or_default();
+    let files = match heretek_gate::files::changed_files(&ctx) {
+        Ok(files) => files,
+        Err(error) => return setup_failure(&ctx, &error.to_string()),
+    };
     let ctx = ctx.with_files(files);
     pipeline.run(&ctx)
+}
+
+fn setup_failure(ctx: &GateContext, message: &str) -> GateReport {
+    use heretek_core::Diagnostic;
+    heretek_core::GateReport::from_stages(
+        ctx.target.describe(),
+        vec![StageReport::failed(
+            "setup",
+            GateKind::Blocking,
+            0,
+            vec![Diagnostic::new(
+                "setup",
+                Severity::Error,
+                "",
+                0,
+                0,
+                format!("cannot determine changed files: {message}"),
+            )],
+        )],
+    )
 }
 
 fn accumulate(total: &mut Usage, usage: &Usage) {
@@ -351,11 +465,7 @@ fn accumulate(total: &mut Usage, usage: &Usage) {
 }
 
 fn compact_tail(tail: &mut [Message], budget: usize) {
-    if tail.len() < 3 {
-        return;
-    }
-    let last_index = tail.len() - 1;
-    for message in tail.iter_mut().take(last_index) {
+    for message in tail.iter_mut() {
         if message.role != heretek_model::Role::Tool {
             continue;
         }

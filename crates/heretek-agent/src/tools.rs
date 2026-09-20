@@ -152,6 +152,7 @@ impl ToolBox {
         };
         match std::fs::read_to_string(&path) {
             Ok(content) => {
+                let content = cap_content(&content, 160_000);
                 let numbered: Vec<String> = content
                     .lines()
                     .enumerate()
@@ -293,7 +294,16 @@ impl ToolBox {
         let mut normalized = PathBuf::new();
         for component in candidate.components() {
             match component {
-                Component::Normal(part) => normalized.push(part),
+                Component::Normal(part) => {
+                    let part = part.to_string_lossy();
+                    if normalized.as_os_str().is_empty() && (part == ".git" || part == ".heretek") {
+                        return Err("path targets harness-owned state".to_string());
+                    }
+                    if part == ".heretek-shadow.json" {
+                        return Err("path targets harness-owned state".to_string());
+                    }
+                    normalized.push(part.as_ref());
+                }
                 Component::CurDir => {}
                 _ => return Err("path must not escape the workspace".to_string()),
             }
@@ -379,14 +389,16 @@ fn search_dir(path: &Path, needle: &str, matches: &mut Vec<String>, max_depth: u
             continue;
         }
         let entry_path = entry.path();
-        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-        if is_dir {
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             search_dir(&entry_path, needle, matches, max_depth - 1);
             continue;
         }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
         if metadata.len() > 2_000_000 {
             continue;
         }
@@ -408,4 +420,22 @@ fn search_dir(path: &Path, needle: &str, matches: &mut Vec<String>, max_depth: u
             }
         }
     }
+}
+
+fn cap_content(content: &str, max: usize) -> String {
+    if content.chars().count() <= max {
+        return content.to_string();
+    }
+    let head_budget = max * 3 / 5;
+    let tail_budget = max - head_budget;
+    let head: String = content.chars().take(head_budget).collect();
+    let tail: String = content
+        .chars()
+        .rev()
+        .take(tail_budget)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}\n... [file truncated at {max} chars] ...\n{tail}")
 }

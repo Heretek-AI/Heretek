@@ -199,8 +199,13 @@ fn run_agent(args: &RunArgs) -> ExitCode {
                 println!("  summary: {}", outcome.summary);
             }
             println!(
-                "  final gate: {}",
-                if outcome.passed { "passed" } else { "failed" }
+                "  final gate: {} (verification: {})",
+                if outcome.passed { "passed" } else { "failed" },
+                if outcome.verified {
+                    "at least one blocking stage ran"
+                } else {
+                    "no blocking stage ran; treat as unverified"
+                }
             );
             if outcome.finished && outcome.passed {
                 ExitCode::from(EXIT_PASS)

@@ -189,18 +189,18 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
 
     let status = child.wait_timeout(spec.timeout).map_err(GateError::Io)?;
     let timed_out = status.is_none();
+    kill_group(pid);
     if timed_out {
-        kill_group(pid);
         let _ = child.kill();
         let _ = child.wait();
     }
     let code = status.and_then(|status| status.code());
 
     let stdout = stdout_handle
-        .and_then(|handle| handle.join().ok())
+        .and_then(|handle| join_bounded(handle, Duration::from_secs(5)))
         .unwrap_or_default();
     let stderr = stderr_handle
-        .and_then(|handle| handle.join().ok())
+        .and_then(|handle| join_bounded(handle, Duration::from_secs(5)))
         .unwrap_or_default();
 
     Ok(ProcessOutput {
@@ -238,4 +238,15 @@ fn read_capped(mut stream: impl Read, cap: usize) -> String {
         }
     }
     String::from_utf8_lossy(&collected).into_owned()
+}
+
+fn join_bounded<T: Send + 'static>(
+    handle: std::thread::JoinHandle<T>,
+    timeout: Duration,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(handle.join().ok());
+    });
+    receiver.recv_timeout(timeout).ok().flatten()
 }
