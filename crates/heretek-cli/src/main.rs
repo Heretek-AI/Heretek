@@ -1,10 +1,14 @@
-mod doctor;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use heretek_gate::{GateContext, Pipeline, Target};
+use heretek_core::{GateReport, HereConfig};
+use heretek_gate::{Baseline, GateContext, Pipeline, Target, build_pipeline};
+
+const EXIT_PASS: u8 = 0;
+const EXIT_BLOCKED: u8 = 1;
+const EXIT_USAGE: u8 = 2;
+const EXIT_INTERNAL: u8 = 3;
 
 #[derive(Parser)]
 #[command(
@@ -21,12 +25,16 @@ struct Cli {
 enum Command {
     /// Run the deterministic gate pipeline
     Gate(GateArgs),
-    /// Check for required and optional tooling
-    Doctor,
+    /// Check tooling, network isolation, and configured model endpoints
+    Doctor(DoctorArgs),
+    /// Write starter configuration and hook files
+    Init(InitArgs),
+    /// Run the MCP server on stdio
+    Mcp,
 }
 
 #[derive(Args)]
-struct GateArgs {
+pub struct GateArgs {
     /// Gate the staged changes (default target)
     #[arg(long)]
     staged: bool,
@@ -39,10 +47,33 @@ struct GateArgs {
     /// Output format
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
+    /// Allow the format stage to auto-fix (harness-owned worktrees only)
+    #[arg(long)]
+    fix: bool,
+}
+
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Probe every configured model endpoint
+    #[arg(long)]
+    models: bool,
+}
+
+#[derive(Args)]
+pub struct InitArgs {
+    /// Emit the lefthook snippet on stdout instead of writing files
+    #[arg(long)]
+    print: bool,
+    /// Overwrite existing files
+    #[arg(long)]
+    force: bool,
+    /// Also write the lefthook snippet
+    #[arg(long)]
+    lefthook: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum OutputFormat {
+pub enum OutputFormat {
     Text,
     Json,
 }
@@ -50,77 +81,148 @@ enum OutputFormat {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Gate(args) => run_gate(args),
-        Command::Doctor => doctor::run(),
+        Command::Gate(args) => run_gate(&args),
+        Command::Doctor(args) => doctor::run(&args),
+        Command::Init(args) => init::run(&args),
+        Command::Mcp => run_mcp(),
     }
 }
 
-fn run_gate(args: GateArgs) -> ExitCode {
-    let target = match (args.staged, args.worktree) {
-        (_, Some(path)) => Target::Worktree(path),
-        _ => Target::Staged,
-    };
-
+fn run_gate(args: &GateArgs) -> ExitCode {
     let repo_root = match std::env::current_dir() {
         Ok(path) => path,
         Err(error) => {
             eprintln!("heretek: cannot resolve working directory: {error}");
-            return ExitCode::from(2);
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let config = match HereConfig::load(&repo_root) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("heretek: {error}");
+            return ExitCode::from(EXIT_USAGE);
         }
     };
 
-    let mut ctx = GateContext::new(repo_root, target);
-    ctx.baseline = args.baseline;
+    let target = match (&args.staged, &args.worktree) {
+        (_, Some(path)) => {
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                repo_root.join(path)
+            };
+            Target::Worktree(absolute)
+        }
+        _ => Target::Staged,
+    };
 
-    let pipeline = Pipeline::empty();
-    let report = pipeline.run(&ctx);
+    let baseline = args
+        .baseline
+        .clone()
+        .or_else(|| config.gate.baseline.clone());
+    let pipeline = build_pipeline(&repo_root, &config.gate);
+    let ctx = GateContext::new(&repo_root, target)
+        .with_config(std::sync::Arc::new(config.gate.clone()))
+        .with_baseline(baseline.clone())
+        .with_fix(args.fix);
+
+    let files = match heretek_gate::files::changed_files(&ctx) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("heretek: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let ctx = ctx.with_files(files);
+
+    let mut report = pipeline.run(&ctx);
+
+    if baseline.is_some() {
+        let id = format!("cli-{}", std::process::id());
+        match Baseline::capture(&pipeline, &ctx, &id) {
+            Ok(captured) => report = captured.match_new(report),
+            Err(error) => {
+                eprintln!("heretek: baseline capture failed: {error}");
+                return ExitCode::from(EXIT_INTERNAL);
+            }
+        }
+    }
 
     match args.format {
         OutputFormat::Json => match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),
             Err(error) => {
                 eprintln!("heretek: cannot serialize report: {error}");
-                return ExitCode::from(3);
+                return ExitCode::from(EXIT_INTERNAL);
             }
         },
         OutputFormat::Text => print_text_report(&report, &pipeline),
     }
 
     if report.passed {
-        ExitCode::SUCCESS
+        ExitCode::from(EXIT_PASS)
     } else {
-        ExitCode::from(1)
+        ExitCode::from(EXIT_BLOCKED)
     }
 }
 
-fn print_text_report(report: &heretek_core::GateReport, pipeline: &Pipeline) {
-    let target = &report.target;
-    println!("heretek gate: {target}");
-    let stage_ids = pipeline.stage_ids();
-    if stage_ids.is_empty() {
-        println!("  no stages implemented yet (skeleton pipeline)");
-    } else {
-        for stage in &report.stages {
-            let status = format!("{:?}", stage.status).to_lowercase();
-            println!("  [{status}] {} ({} ms)", stage.id, stage.duration_ms);
-            for diagnostic in &stage.diagnostics {
-                println!(
-                    "      {}:{}:{} {} {}",
-                    diagnostic.file,
-                    diagnostic.line,
-                    diagnostic.column,
-                    diagnostic.severity.as_str(),
-                    diagnostic.message
-                );
-            }
+fn print_text_report(report: &GateReport, pipeline: &Pipeline) {
+    println!("heretek gate: {}", report.target);
+    for stage in &report.stages {
+        let status = format!("{:?}", stage.status).to_lowercase();
+        println!("  [{status}] {} ({} ms)", stage.id, stage.duration_ms);
+        if let Some(reason) = &stage.skipped_reason {
+            println!("      skipped: {reason}");
+        }
+        for diagnostic in &stage.diagnostics {
+            let marker = if diagnostic.is_new { "new" } else { "baseline" };
+            println!(
+                "      {}:{}:{} {} [{}] {}",
+                diagnostic.file,
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.severity.as_str(),
+                marker,
+                diagnostic.message
+            );
         }
     }
     for warning in &report.warnings {
         println!("warning: {warning}");
     }
     println!(
-        "summary: {} blocking failure(s), {} new diagnostic(s)",
+        "summary: {} blocking failure(s), {} new diagnostic(s), {} baseline diagnostic(s)",
         report.blocking_failures,
-        report.new_diagnostic_count()
+        report.new_diagnostic_count(),
+        report
+            .stages
+            .iter()
+            .flat_map(|stage| &stage.diagnostics)
+            .filter(|diagnostic| !diagnostic.is_new)
+            .count()
     );
+    let _ = pipeline;
 }
+
+fn run_mcp() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("heretek: cannot start async runtime: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    match runtime.block_on(heretek_mcp::serve_stdio()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("heretek: mcp server failed: {error}");
+            ExitCode::from(EXIT_INTERNAL)
+        }
+    }
+}
+
+mod doctor;
+mod init;

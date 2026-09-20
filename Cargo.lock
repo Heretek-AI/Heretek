@@ -575,7 +575,10 @@ dependencies = [
  "clap",
  "heretek-core",
  "heretek-gate",
+ "heretek-mcp",
+ "heretek-model",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

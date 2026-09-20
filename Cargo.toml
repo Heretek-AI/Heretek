@@ -26,3 +26,6 @@ clap = { version = "4", features = ["derive"] }
 wait-timeout = "0.2"
 heretek-core = { path = "crates/heretek-core" }
 heretek-gate = { path = "crates/heretek-gate" }
+heretek-model = { path = "crates/heretek-model" }
+heretek-mcp = { path = "crates/heretek-mcp" }
+heretek-agent = { path = "crates/heretek-agent" }
