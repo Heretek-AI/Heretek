@@ -42,6 +42,7 @@ struct SessionState {
     repair: ToolCallRepair,
     consecutive_failures: u32,
     usage: Usage,
+    read_paths: std::collections::BTreeSet<String>,
 }
 
 const PROTECTED_CONFIG_PREFIXES: &[&str] = &[
@@ -116,6 +117,7 @@ pub fn run_session(
         repair: ToolCallRepair::new(),
         consecutive_failures: 0,
         usage: Usage::default(),
+        read_paths: std::collections::BTreeSet::new(),
     };
 
     let mut finished = false;
@@ -211,7 +213,29 @@ pub fn run_session(
                 name: call.name.clone(),
                 arguments_chars: call.arguments.len(),
             });
+            if matches!(call.name.as_str(), "write_file" | "edit_file")
+                && let Some(path) = argument_path(&call.arguments)
+                && shadow_root.join(&path).exists()
+                && !state.read_paths.contains(&path)
+            {
+                let message = format!("read {path} with read_file before editing it");
+                events.write(&Event::ToolResult {
+                    name: call.name.clone(),
+                    is_error: true,
+                    chars: message.len(),
+                });
+                state
+                    .tail
+                    .push(Message::tool_call_response(&call.id, message));
+                continue;
+            }
             let outcome = toolbox.dispatch(call);
+            if call.name == "read_file"
+                && !outcome.is_error
+                && let Some(path) = argument_path(&call.arguments)
+            {
+                state.read_paths.insert(path);
+            }
             events.write(&Event::ToolResult {
                 name: call.name.clone(),
                 is_error: outcome.is_error,
@@ -510,6 +534,17 @@ fn run_auditor(
     }
     let frame = output.combined();
     AuditResult::Objection(crate::context::compact_tool_result(&frame, 1_200))
+}
+
+fn argument_path(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("path")
+                .and_then(|path| path.as_str())
+                .map(str::to_string)
+        })
 }
 
 fn protect_configs(shadow_root: &std::path::Path) -> Vec<String> {
