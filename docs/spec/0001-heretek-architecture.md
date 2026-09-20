@@ -342,12 +342,12 @@ examples/         lefthook snippet, MCP config, sample .heretek.toml
 
 ## 16. Phases
 
-| Phase | Deliverable | Estimate |
-| --- | --- | --- |
-| 0 | Baseline evaluation of the local model through an upstream harness on the public slice | 1 week |
-| 1 | Gate engine v0 (JS/TS stages), CLI, shadow worktree, lefthook integration | 3 weeks |
-| 2 | Own loop v0, model router, context zones, repair passes, MCP server | 4 weeks |
-| 3 | Evaluation contract run, Rust/Python stages, auditor prototype, OSS release polish | 4 weeks |
+| Phase | Deliverable | Estimate | Tracking |
+| --- | --- | --- | --- |
+| 0 | Baseline evaluation of the local model through an upstream harness on the public slice | 1 week | #1, #11 |
+| 1 | Gate engine v0 (JS/TS stages), CLI, shadow worktree, lefthook integration | 3 weeks | #3, #4, #5, #6, #8 |
+| 2 | Own loop v0, model router, context zones, repair passes, MCP server | 4 weeks | #2, #7, #9, #10 |
+| 3 | Evaluation contract run, Rust/Python stages, auditor prototype, OSS release polish | 4 weeks | #12, #13 |
 
 ## 17. Open questions
 
