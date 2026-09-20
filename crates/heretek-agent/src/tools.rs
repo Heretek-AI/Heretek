@@ -3,9 +3,16 @@ use std::path::{Component, Path, PathBuf};
 use heretek_model::{ToolCall, ToolDefinition};
 use serde_json::json;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    Generator,
+    Auditor,
+}
+
 pub struct ToolBox {
     root: PathBuf,
     canonical_root: PathBuf,
+    mode: ToolMode,
 }
 
 pub struct ToolOutcome {
@@ -28,11 +35,20 @@ const SKIP_DIRS: &[&str] = &[
 
 impl ToolBox {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_mode(root, ToolMode::Generator)
+    }
+
+    pub fn auditor(root: impl Into<PathBuf>) -> Self {
+        Self::with_mode(root, ToolMode::Auditor)
+    }
+
+    pub fn with_mode(root: impl Into<PathBuf>, mode: ToolMode) -> Self {
         let root = root.into();
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         Self {
             root,
             canonical_root,
+            mode,
         }
     }
 
@@ -180,6 +196,9 @@ impl ToolBox {
             Ok(path) => path,
             Err(message) => return error(&message),
         };
+        if let Err(message) = self.check_write(path.strip_prefix(&self.root).unwrap_or(&path)) {
+            return error(&message);
+        }
         if let Some(parent) = path.parent()
             && let Err(io_error) = std::fs::create_dir_all(parent)
         {
@@ -213,6 +232,9 @@ impl ToolBox {
             Ok(path) => path,
             Err(message) => return error(&message),
         };
+        if let Err(message) = self.check_write(path.strip_prefix(&self.root).unwrap_or(&path)) {
+            return error(&message);
+        }
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(io_error) => return error(&format!("cannot read file: {io_error}")),
@@ -283,6 +305,25 @@ impl ToolBox {
             is_error: false,
             mutated: false,
             finish: None,
+        }
+    }
+
+    fn check_write(&self, relative: &std::path::Path) -> Result<(), String> {
+        let first = relative
+            .components()
+            .find_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        match self.mode {
+            ToolMode::Generator if first == ".heretek-audit" => {
+                Err("path is owned by the auditor and cannot be modified".to_string())
+            }
+            ToolMode::Auditor if first != ".heretek-audit" => {
+                Err("the auditor may only write under .heretek-audit/".to_string())
+            }
+            _ => Ok(()),
         }
     }
 

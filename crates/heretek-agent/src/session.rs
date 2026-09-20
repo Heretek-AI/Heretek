@@ -404,7 +404,7 @@ fn run_auditor(
         cached_tokens: response.usage.cached_tokens,
     });
 
-    let toolbox = ToolBox::new(shadow_root);
+    let toolbox = ToolBox::auditor(shadow_root);
     let (calls, _) =
         ToolCallRepair::new().repair(response.content.as_deref(), response.tool_calls.clone());
     for call in calls {
