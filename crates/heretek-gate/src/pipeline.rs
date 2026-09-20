@@ -1,0 +1,79 @@
+use std::time::Instant;
+
+use heretek_core::{Diagnostic, GateReport, Severity, StageReport};
+
+use crate::stage::{GateContext, Stage, StageOutcome};
+
+pub struct Pipeline {
+    stages: Vec<Box<dyn Stage>>,
+}
+
+impl Pipeline {
+    pub fn new(stages: Vec<Box<dyn Stage>>) -> Self {
+        Self { stages }
+    }
+
+    pub fn empty() -> Self {
+        Self { stages: Vec::new() }
+    }
+
+    pub fn stage_ids(&self) -> Vec<&'static str> {
+        self.stages.iter().map(|stage| stage.id()).collect()
+    }
+
+    pub fn run(&self, ctx: &GateContext) -> GateReport {
+        let mut reports = Vec::with_capacity(self.stages.len());
+        for stage in &self.stages {
+            let started = Instant::now();
+            let report = match stage.run(ctx) {
+                Ok(outcome) => to_report(stage.as_ref(), elapsed_ms(started), outcome),
+                Err(error) => {
+                    let diagnostic = Diagnostic::new(
+                        stage.id(),
+                        Severity::Error,
+                        "",
+                        0,
+                        0,
+                        format!("stage error: {error}"),
+                    );
+                    StageReport::failed(
+                        stage.id(),
+                        stage.kind(),
+                        elapsed_ms(started),
+                        vec![diagnostic],
+                    )
+                }
+            };
+            reports.push(report);
+        }
+
+        let mut report = GateReport::from_stages(ctx.target.describe(), reports);
+        if self.stages.is_empty() {
+            report
+                .warnings
+                .push("pipeline contains no stages; nothing was verified".to_string());
+        }
+        report
+    }
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
+}
+
+fn to_report(stage: &dyn Stage, duration_ms: u64, outcome: StageOutcome) -> StageReport {
+    StageReport {
+        id: stage.id().to_string(),
+        kind: stage.kind(),
+        status: outcome.status,
+        duration_ms,
+        diagnostics: outcome.diagnostics,
+        skipped_reason: outcome.skipped_reason,
+    }
+}

@@ -1,0 +1,10 @@
+/target
+node_modules/
+dist/
+.heretek/
+*.log
+.DS_Store
+.idea/
+.vscode/
+.venv/
+__pycache__/

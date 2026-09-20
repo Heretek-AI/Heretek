@@ -1,0 +1,13 @@
+# Example lefthook configuration for Heretek.
+# Copy the relevant blocks into your repository's lefthook.yml.
+# Hook mode never mutates the worktree and never auto-fixes; it only reports.
+
+pre-commit:
+  commands:
+    heretek:
+      run: heretek gate --staged --format text
+
+pre-push:
+  commands:
+    heretek:
+      run: heretek gate --baseline origin/main --format text
