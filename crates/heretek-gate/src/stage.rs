@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use heretek_core::{Diagnostic, GateKind, StageStatus};
+use heretek_core::{Diagnostic, GateConfig, GateKind, StageStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -22,6 +23,8 @@ pub struct GateContext {
     pub repo_root: PathBuf,
     pub target: Target,
     pub baseline: Option<String>,
+    pub files: Vec<String>,
+    pub config: Arc<GateConfig>,
 }
 
 impl GateContext {
@@ -30,7 +33,24 @@ impl GateContext {
             repo_root: repo_root.into(),
             target,
             baseline: None,
+            files: Vec::new(),
+            config: Arc::new(GateConfig::default()),
         }
+    }
+
+    pub fn with_files(mut self, files: Vec<String>) -> Self {
+        self.files = files;
+        self
+    }
+
+    pub fn with_config(mut self, config: Arc<GateConfig>) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn with_baseline(mut self, baseline: Option<String>) -> Self {
+        self.baseline = baseline;
+        self
     }
 }
 
@@ -46,6 +66,14 @@ impl StageOutcome {
         Self {
             status: StageStatus::Passed,
             diagnostics: Vec::new(),
+            skipped_reason: None,
+        }
+    }
+
+    pub fn passed_with(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            status: StageStatus::Passed,
+            diagnostics,
             skipped_reason: None,
         }
     }

@@ -1,0 +1,20 @@
+[package]
+name = "heretek-mcp"
+description = "Heretek mcp crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+heretek-core = { version = "0.0.1", path = "../heretek-core" }
+heretek-gate = { version = "0.0.1", path = "../heretek-gate" }
+rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
+schemars = { version = "1", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

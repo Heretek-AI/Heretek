@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use heretek_core::{Diagnostic, GateReport, Severity, StageReport};
+use heretek_core::{Diagnostic, GateKind, GateReport, Severity, StageReport};
 
 use crate::stage::{GateContext, Stage, StageOutcome};
 
@@ -19,6 +19,13 @@ impl Pipeline {
 
     pub fn stage_ids(&self) -> Vec<&'static str> {
         self.stages.iter().map(|stage| stage.id()).collect()
+    }
+
+    pub fn stage_kinds(&self) -> Vec<(&'static str, GateKind)> {
+        self.stages
+            .iter()
+            .map(|stage| (stage.id(), stage.kind()))
+            .collect()
     }
 
     pub fn run(&self, ctx: &GateContext) -> GateReport {
