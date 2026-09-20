@@ -1,0 +1,12 @@
+{
+  "id": "add-function",
+  "description": "Create src/add.ts exporting an add(a, b) function",
+  "fixture": "ts-basic",
+  "task": "Create src/add.ts with an exported function add(a: number, b: number): number that returns the sum, then finish.",
+  "max_turns": 8,
+  "checks": [
+    { "type": "file_exists", "path": "src/add.ts" },
+    { "type": "file_contains", "path": "src/add.ts", "text": "export function add" },
+    { "type": "file_contains", "path": "src/add.ts", "text": "a + b" }
+  ]
+}

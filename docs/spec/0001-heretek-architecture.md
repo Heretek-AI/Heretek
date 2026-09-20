@@ -1,6 +1,6 @@
 # Spec 0001: Heretek architecture
 
-**Status:** draft
+**Status:** implemented (alpha); tracked by issues #1-#13
 **Date:** 2026-09-20
 **Supersedes:** `docs/research/inputs/ai-coding-harness-architecture-design.pdf`
 (see the fact-check in `docs/research/2026-09-ai-coding-harness-landscape.md`, section 15)
@@ -377,4 +377,25 @@ examples/         lefthook snippet, MCP config, sample .heretek.toml
 | Lane | A named model profile (`fast`, `deep`, `micro`) |
 | Decide | The interface that produces routing and strictness decisions |
 | False reject | A gate failure on a patch that is actually valid |
+
+## 19. Implementation status (2026-09-20)
+
+What exists in the repository today:
+
+| Section | Status |
+| --- | --- |
+| 6 Gate engine | Implemented for JS/TS: tree-sitter syntax, biome format, tsgo/tsc typecheck, vitest/jest tests, ast-grep, semgrep secrets and SAST, knip, osv-scanner. Diagnostics use `heretek.diagnostic/1`. Python and Rust stages are not started (#3, #13). |
+| 7 Shadow workspace | Implemented with git worktrees, per-turn snapshot refs, apply-on-pass, copy fallback for non-git trees, persistence and cleanup commands. |
+| 8 Model layer | Implemented: OpenAI-compatible blocking client with retries, lanes, endpoint probing, token and cache accounting. Context tiers are configurable; per-engine cache verification is not yet measured (#7). |
+| 9 Agent loop | Implemented: sandboxed tools, read-before-write (write requires prior read is not enforced yet), repair passes, storm detection, compaction, budgets, escalation, JSONL events. |
+| 10 Decide | Heuristics implemented with reason codes; learned-model promotion is documented in ADR-0005. |
+| 11 Auditor | Not started (#12), deferred by design. |
+| 12 Surfaces | CLI, lefthook snippet, MCP server, and `AGENTS.md` consumption are implemented. |
+| 13 Evaluation contract | Runner and fixtures implemented in `eval/`; the public run and the local task suite (#1) are pending. |
+| 14 Security | Sandbox rules, network namespace isolation where available, config protection, and baseline ref validation implemented; see SECURITY.md. |
+
+Known deviations from this spec: the typecheck stage runs CLI checkers
+(`tsgo`/`tsc`) rather than an LSP daemon (section 6 allows either); auto-fix is
+gated on `--fix`/harness-owned shadows rather than always-on; the auditor is
+deferred until the gate engine's evaluation numbers exist.
 

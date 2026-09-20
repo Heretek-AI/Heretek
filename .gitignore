@@ -2,6 +2,7 @@
 node_modules/
 dist/
 .heretek/
+eval/results/
 *.log
 .DS_Store
 .idea/

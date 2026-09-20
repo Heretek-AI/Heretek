@@ -1,0 +1,33 @@
+# Notices
+
+Heretek is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT` and
+`LICENSE-APACHE`). It depends on third-party tools as subprocesses but vendors
+no code from other coding agents. The architecture was informed by the
+following open-source projects and public writeups; patterns were reimplemented
+with attribution, not copied:
+
+- **DeepSeek-Reasonix** (MIT, esengine/DeepSeek-Reasonix): cache-first context
+  partitioning (immutable prefix, append-only log, volatile scratch), tool-call
+  repair passes (flatten, scavenge, truncation repair, storm detection), and
+  transparent cost escalation informed `heretek-agent`.
+- **Codewhale** (open source, Hmbown/Codewhale): shadow repository state,
+  evidence-over-narration priority, and OS-level sandboxing informed the shadow
+  workspace and gate policy.
+- **Claude Code** (proprietary, Anthropic): read-before-write tool
+  prerequisites and structured context compaction informed the agent loop.
+- **OpenAI Codex CLI** (Apache-2.0): the JSONL event stream and non-interactive
+  output patterns informed `heretek-cli` and `heretek-agent`.
+- **OpenCode** (MIT, Anomaly): the MCP-facing surface and LSP stage planning
+  were informed by its integration model.
+- **Playwright** (Apache-2.0, Microsoft): browser verification guidance in the
+  research document, not embedded code.
+- **tree-sitter** (MIT), **Biome** (MIT), **ast-grep** (MIT), **Semgrep**
+  (LGPL-2.1), **knip** (ISC), **OSV-Scanner** (Apache-2.0), **vitest** (MIT),
+  **TypeScript / tsgo** (Apache-2.0), **ruff** (MIT), **ty** (MIT): used as
+  subprocess tools or libraries under their own licenses.
+- **Model Context Protocol Rust SDK** (`rmcp`, MIT, modelcontextprotocol):
+  MCP server implementation.
+- **Qwen** (Apache-2.0, Alibaba): default reference models; no weights are
+  distributed by this project.
+
+If you believe an attribution is missing or incorrect, open an issue.
