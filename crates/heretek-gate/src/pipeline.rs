@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use heretek_core::{Diagnostic, GateKind, GateReport, Severity, StageReport};
+use heretek_core::{Diagnostic, GateKind, GateReport, Severity, StageReport, StageStatus};
 
-use crate::stage::{GateContext, Stage, StageOutcome};
+use crate::stage::{GateContext, GateError, Stage, StageOutcome};
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
@@ -29,6 +29,12 @@ impl Pipeline {
     }
 
     pub fn run(&self, ctx: &GateContext) -> GateReport {
+        let prepared = match ctx.prepared() {
+            Ok(prepared) => prepared,
+            Err(error) => return setup_failure(ctx, error),
+        };
+        let ctx = &prepared.ctx;
+
         let mut reports = Vec::with_capacity(self.stages.len());
         for stage in &self.stages {
             let started = Instant::now();
@@ -60,6 +66,18 @@ impl Pipeline {
                 .warnings
                 .push("pipeline contains no stages; nothing was verified".to_string());
         }
+        for stage in &report.stages {
+            if stage.kind == GateKind::Blocking && stage.status == StageStatus::Skipped {
+                let reason = stage
+                    .skipped_reason
+                    .clone()
+                    .unwrap_or_else(|| "no reason given".to_string());
+                report.warnings.push(format!(
+                    "blocking stage '{}' was skipped: {}",
+                    stage.id, reason
+                ));
+            }
+        }
         report
     }
 }
@@ -68,6 +86,26 @@ impl Default for Pipeline {
     fn default() -> Self {
         Self::empty()
     }
+}
+
+fn setup_failure(ctx: &GateContext, error: GateError) -> GateReport {
+    let diagnostic = Diagnostic::new(
+        "setup",
+        Severity::Error,
+        "",
+        0,
+        0,
+        format!("could not prepare gate target: {error}"),
+    );
+    GateReport::from_stages(
+        ctx.target.describe(),
+        vec![StageReport::failed(
+            "setup",
+            GateKind::Blocking,
+            0,
+            vec![diagnostic],
+        )],
+    )
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

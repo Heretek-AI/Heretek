@@ -6,9 +6,10 @@ use serde_json::Value;
 
 use crate::files;
 use crate::process::{ProcessSpec, run};
-use crate::stage::{GateContext, GateError, Stage, StageOutcome, Target};
+use crate::stage::{GateContext, GateError, Stage, StageOutcome};
 use crate::stages::util;
 
+const UNPARSEABLE: &str = "tool output could not be parsed (possibly truncated); increase gate.max_output_bytes or reduce scope";
 const MAX_DIAGNOSTICS: usize = 200;
 
 pub struct DepsStage {
@@ -44,8 +45,7 @@ impl Stage for DepsStage {
             return Ok(StageOutcome::skipped("no changed files"));
         }
 
-        let root = target_root(ctx);
-        let spec = ProcessSpec::new(program, &root)
+        let spec = ProcessSpec::new(program, ctx.target_root())
             .args(["scan", "source", "-r", "--format", "json", "."])
             .timeout(self.timeout)
             .max_output_bytes(self.max_output)
@@ -57,8 +57,19 @@ impl Stage for DepsStage {
             });
         }
 
+        if output.truncated(self.max_output) {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
+        }
+
         let parsed = parse_json(&output.stdout).or_else(|| parse_json(&output.stderr));
         let Some(value) = parsed else {
+            if !output.combined().trim().is_empty() {
+                return Err(GateError::Failed {
+                    message: UNPARSEABLE.to_string(),
+                });
+            }
             if output.success() {
                 return Ok(StageOutcome::passed());
             }
@@ -76,13 +87,6 @@ impl Stage for DepsStage {
             return Ok(StageOutcome::passed());
         }
         Ok(StageOutcome::failed(diagnostics))
-    }
-}
-
-fn target_root(ctx: &GateContext) -> PathBuf {
-    match &ctx.target {
-        Target::Staged => ctx.repo_root.clone(),
-        Target::Worktree(path) => path.clone(),
     }
 }
 

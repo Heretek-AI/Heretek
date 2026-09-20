@@ -5,6 +5,7 @@ use crate::files::git_output;
 use crate::stage::GateError;
 
 pub struct ShadowWorkspace {
+    repo_root: PathBuf,
     path: PathBuf,
     id: String,
     git: bool,
@@ -13,7 +14,8 @@ pub struct ShadowWorkspace {
 }
 
 impl ShadowWorkspace {
-    pub fn create(repo_root: &Path, id: &str) -> Result<Self, GateError> {
+    pub fn create(repo_root: &Path, rev: &str, id: &str) -> Result<Self, GateError> {
+        crate::files::valid_ref(rev)?;
         let git = is_git_repo(repo_root);
         let heretek_dir = repo_root.join(".heretek");
         std::fs::create_dir_all(&heretek_dir)?;
@@ -32,6 +34,7 @@ impl ShadowWorkspace {
                 );
                 let _ = std::fs::remove_dir_all(&path);
             }
+            let _ = git_output(repo_root, &["worktree".to_string(), "prune".to_string()]);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -41,14 +44,16 @@ impl ShadowWorkspace {
                     "worktree".to_string(),
                     "add".to_string(),
                     "--detach".to_string(),
+                    "--force".to_string(),
                     path.display().to_string(),
-                    "HEAD".to_string(),
+                    rev.to_string(),
                 ],
             )?;
             let base = git_output(&path, &["rev-parse".to_string(), "HEAD".to_string()])?
                 .trim()
                 .to_string();
             Ok(Self {
+                repo_root: repo_root.to_path_buf(),
                 path,
                 id: id.to_string(),
                 git: true,
@@ -62,6 +67,7 @@ impl ShadowWorkspace {
             }
             copy_tree(repo_root, &path)?;
             Ok(Self {
+                repo_root: repo_root.to_path_buf(),
                 path,
                 id: id.to_string(),
                 git: false,
@@ -118,6 +124,7 @@ impl ShadowWorkspace {
     }
 
     pub fn rollback(&self, sha: &str) -> Result<(), GateError> {
+        crate::files::valid_ref(sha)?;
         if !self.git {
             return Err(GateError::Failed {
                 message: "rollback is not supported for non-git workspaces".to_string(),
@@ -158,10 +165,10 @@ impl ShadowWorkspace {
         copy_tree(&self.path, target)
     }
 
-    pub fn cleanup(self) {
+    fn cleanup_inner(&self) {
         if self.git {
             let _ = git_output(
-                std::path::Path::new("."),
+                &self.repo_root,
                 &[
                     "worktree".to_string(),
                     "remove".to_string(),
@@ -169,10 +176,21 @@ impl ShadowWorkspace {
                     self.path.display().to_string(),
                 ],
             );
+            let _ = git_output(
+                &self.repo_root,
+                &["worktree".to_string(), "prune".to_string()],
+            );
         } else {
             let _ = std::fs::remove_dir_all(&self.path);
         }
-        let _ = self.snapshots;
+    }
+
+    pub fn cleanup(self) {}
+}
+
+impl Drop for ShadowWorkspace {
+    fn drop(&mut self) {
+        self.cleanup_inner();
     }
 }
 
@@ -220,10 +238,14 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), GateError> {
             continue;
         }
         let from = entry.path();
+        let metadata = std::fs::symlink_metadata(&from)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
         let to = destination.join(&file_name);
-        if from.is_dir() {
+        if metadata.is_dir() {
             copy_tree(&from, &to)?;
-        } else if from.is_file() {
+        } else if metadata.is_file() {
             std::fs::copy(&from, &to)?;
         }
     }

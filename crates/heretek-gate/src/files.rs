@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use heretek_core::validate_git_ref;
+
 use crate::stage::{GateContext, GateError, Target};
 
 const DEFAULT_IGNORES: &[&str] = &[
@@ -15,44 +17,83 @@ const DEFAULT_IGNORES: &[&str] = &[
 ];
 
 pub fn changed_files(ctx: &GateContext) -> Result<Vec<String>, GateError> {
-    let (cwd, args) = match &ctx.target {
-        Target::Staged => (
-            ctx.repo_root.clone(),
-            vec![
-                "diff".to_string(),
-                "--cached".to_string(),
-                "--name-only".to_string(),
-                "--diff-filter=ACMR".to_string(),
-                "-z".to_string(),
-            ],
-        ),
-        Target::Worktree(path) => match &ctx.baseline {
-            Some(baseline) => (
-                path.clone(),
-                vec![
-                    "diff".to_string(),
-                    "--name-only".to_string(),
-                    "-z".to_string(),
-                    baseline.clone(),
-                ],
-            ),
-            None => (path.clone(), vec!["ls-files".to_string(), "-z".to_string()]),
-        },
-    };
+    ctx.validate()?;
+    let mut files: Vec<String> = Vec::new();
 
-    let output = git_output(&cwd, &args)?;
-    let mut files = Vec::new();
-    for entry in output.split('\0') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
+    match &ctx.target {
+        Target::Staged => match &ctx.baseline {
+            Some(baseline) => {
+                files.extend(nul_to_paths(&git_output(
+                    &ctx.repo_root,
+                    &[
+                        "diff".to_string(),
+                        "--cached".to_string(),
+                        "--name-only".to_string(),
+                        "--diff-filter=ACMR".to_string(),
+                        "-z".to_string(),
+                        baseline.clone(),
+                        "--".to_string(),
+                    ],
+                )?));
+            }
+            None => {
+                files.extend(nul_to_paths(&git_output(
+                    &ctx.repo_root,
+                    &[
+                        "diff".to_string(),
+                        "--cached".to_string(),
+                        "--name-only".to_string(),
+                        "--diff-filter=ACMR".to_string(),
+                        "-z".to_string(),
+                    ],
+                )?));
+            }
+        },
+        Target::Worktree(path) => {
+            let mut args = vec![
+                "diff".to_string(),
+                "--name-only".to_string(),
+                "-z".to_string(),
+            ];
+            if let Some(baseline) = &ctx.baseline {
+                args.push(baseline.clone());
+                args.push("--".to_string());
+            }
+            if ctx.baseline.is_some() {
+                files.extend(nul_to_paths(&git_output(path, &args)?));
+            }
+            files.extend(nul_to_paths(&git_output(
+                path,
+                &[
+                    "ls-files".to_string(),
+                    "-z".to_string(),
+                    "--cached".to_string(),
+                    "--others".to_string(),
+                    "--exclude-standard".to_string(),
+                ],
+            )?));
         }
-        if is_ignored(entry, &ctx.config.ignore) {
-            continue;
-        }
-        files.push(entry.to_string());
     }
-    Ok(files)
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut output = Vec::new();
+    for file in files {
+        if file.is_empty() || is_ignored(&file, &ctx.config.ignore) {
+            continue;
+        }
+        if seen.insert(file.clone()) {
+            output.push(file);
+        }
+    }
+    Ok(output)
+}
+
+fn nul_to_paths(output: &str) -> Vec<String> {
+    output
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn git_output(cwd: &Path, args: &[String]) -> Result<String, GateError> {
@@ -145,4 +186,8 @@ pub fn display_path(path: &Path, repo_root: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+pub fn valid_ref(value: &str) -> Result<(), GateError> {
+    validate_git_ref(value).map_err(|message| GateError::Failed { message })
 }

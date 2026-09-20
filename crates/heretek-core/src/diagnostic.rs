@@ -45,6 +45,18 @@ pub struct Diagnostic {
     pub is_new: bool,
 }
 
+pub fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() && character != '\n' && character != '\t' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 impl Diagnostic {
     pub fn new(
         gate: impl Into<String>,
@@ -56,17 +68,27 @@ impl Diagnostic {
     ) -> Self {
         Self {
             schema: DIAGNOSTIC_SCHEMA.to_string(),
-            gate: gate.into(),
+            gate: sanitize(&gate.into()),
             severity,
-            file: file.into(),
+            file: sanitize(&file.into()),
             line,
             column,
             code: None,
-            message: message.into(),
+            message: sanitize(&message.into()),
             hint: None,
             context: Vec::new(),
             is_new: true,
         }
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(sanitize(&hint.into()));
+        self
+    }
+
+    pub fn with_context(mut self, context: Vec<String>) -> Self {
+        self.context = context.into_iter().map(|line| sanitize(&line)).collect();
+        self
     }
 }
 

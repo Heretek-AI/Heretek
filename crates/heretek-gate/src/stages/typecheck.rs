@@ -54,9 +54,9 @@ impl Stage for TypecheckStage {
             ));
         }
 
-        let project = ctx.repo_root.join("tsconfig.json");
+        let project = ctx.target_root().join("tsconfig.json");
         let spec = if project.is_file() {
-            ProcessSpec::new(program, &ctx.repo_root).args([
+            ProcessSpec::new(program, ctx.target_root()).args([
                 "--noEmit",
                 "--pretty",
                 "false",
@@ -70,7 +70,7 @@ impl Stage for TypecheckStage {
                 "false".to_string(),
             ];
             args.extend(changed.iter().cloned());
-            ProcessSpec::new(program, &ctx.repo_root).args(args)
+            ProcessSpec::new(program, ctx.target_root()).args(args)
         }
         .timeout(self.timeout)
         .max_output_bytes(self.max_output)

@@ -6,10 +6,11 @@ use serde_json::Value;
 
 use crate::files;
 use crate::process::{ProcessSpec, run};
-use crate::stage::{GateContext, GateError, Stage, StageOutcome, Target};
+use crate::stage::{GateContext, GateError, Stage, StageOutcome};
 use crate::stages::util;
 
 const GATE: &str = "knip";
+const UNPARSEABLE: &str = "tool output could not be parsed (possibly truncated); increase gate.max_output_bytes or reduce scope";
 const MAX_DIAGNOSTICS: usize = 200;
 
 const CATEGORIES: [(&str, &str); 11] = [
@@ -66,8 +67,7 @@ impl Stage for KnipStage {
             ));
         }
 
-        let root = target_root(ctx);
-        let spec = ProcessSpec::new(program, &root)
+        let spec = ProcessSpec::new(program, ctx.target_root())
             .args(["--reporter", "json", "--no-progress", "--no-exit-code"])
             .timeout(self.timeout)
             .max_output_bytes(self.max_output)
@@ -79,8 +79,19 @@ impl Stage for KnipStage {
             });
         }
 
+        if output.truncated(self.max_output) {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
+        }
+
         let parsed = parse_json(&output.stdout).or_else(|| parse_json(&output.stderr));
         let Some(value) = parsed else {
+            if !output.combined().trim().is_empty() {
+                return Err(GateError::Failed {
+                    message: UNPARSEABLE.to_string(),
+                });
+            }
             if output.success() {
                 return Ok(StageOutcome::passed());
             }
@@ -94,13 +105,6 @@ impl Stage for KnipStage {
         };
 
         Ok(StageOutcome::passed_with(collect_diagnostics(&value)))
-    }
-}
-
-fn target_root(ctx: &GateContext) -> PathBuf {
-    match &ctx.target {
-        Target::Staged => ctx.repo_root.clone(),
-        Target::Worktree(path) => path.clone(),
     }
 }
 

@@ -9,6 +9,8 @@ use crate::process::{ProcessOutput, ProcessSpec, run};
 use crate::stage::{GateContext, GateError, Stage, StageOutcome, Target};
 use crate::stages::util;
 
+const UNPARSEABLE: &str = "tool output could not be parsed (possibly truncated); increase gate.max_output_bytes or reduce scope";
+
 #[derive(Clone, Copy)]
 enum Runner {
     Vitest,
@@ -109,20 +111,46 @@ impl Stage for TestsStage {
             return Ok(StageOutcome::skipped("no test files changed"));
         }
 
-        let filters: Vec<String> = relevant
+        let path_filters: Vec<String> = relevant
             .iter()
             .filter(|file| is_test_file(file))
             .cloned()
             .collect();
-        let root = target_root(ctx);
+        let filters: Vec<String> = path_filters
+            .iter()
+            .filter(|file| !is_pathological(file))
+            .cloned()
+            .collect();
+        if !path_filters.is_empty() && filters.is_empty() {
+            return Ok(StageOutcome::skipped(
+                "only pathological file names changed",
+            ));
+        }
+        let root = ctx.target_root();
         let changed_mode = ctx.baseline.is_some() || matches!(ctx.target, Target::Staged);
 
-        let mut output = self.execute(program, &root, self.args(&filters, changed_mode))?;
+        let mut output = self.execute(program, root, self.args(&filters, changed_mode))?;
+        if output.truncated(self.max_output) {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
+        }
         let mut parsed = tool_json(&output);
 
         if changed_mode && !output.success() && !has_test_results(parsed.as_ref()) {
-            output = self.execute(program, &root, self.args(&filters, false))?;
+            output = self.execute(program, root, self.args(&filters, false))?;
+            if output.truncated(self.max_output) {
+                return Err(GateError::Failed {
+                    message: UNPARSEABLE.to_string(),
+                });
+            }
             parsed = tool_json(&output);
+        }
+
+        if parsed.is_none() && !output.combined().trim().is_empty() {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
         }
 
         let diagnostics = parsed
@@ -151,11 +179,9 @@ impl Stage for TestsStage {
     }
 }
 
-fn target_root(ctx: &GateContext) -> PathBuf {
-    match &ctx.target {
-        Target::Staged => ctx.repo_root.clone(),
-        Target::Worktree(path) => path.clone(),
-    }
+fn is_pathological(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.starts_with('-') || path.contains('\n')
 }
 
 fn is_test_file(path: &str) -> bool {

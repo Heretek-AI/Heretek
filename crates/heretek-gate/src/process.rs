@@ -2,11 +2,15 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
 use crate::stage::GateError;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[derive(Debug, Clone)]
 pub struct ProcessSpec {
@@ -80,16 +84,56 @@ impl ProcessOutput {
             format!("{}\n{}", self.stdout, self.stderr)
         }
     }
+
+    pub fn truncated(&self, max_output_bytes: usize) -> bool {
+        self.stdout.len() >= max_output_bytes || self.stderr.len() >= max_output_bytes
+    }
+}
+
+pub fn network_isolation_available() -> bool {
+    static PROBE: OnceLock<bool> = OnceLock::new();
+    *PROBE.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("unshare")
+                .args(["--user", "--map-root-user", "--net", "true"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    })
 }
 
 pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
-    let mut command = Command::new(&spec.program);
+    let isolate = !spec.allow_network && network_isolation_available();
+
+    let mut command = if isolate {
+        let mut command = Command::new("unshare");
+        command.args(["--user", "--map-root-user", "--net"]);
+        command.arg(&spec.program);
+        command.args(&spec.args);
+        command
+    } else {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        command
+    };
+
     command
-        .args(&spec.args)
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    command.process_group(0);
 
     command.env_clear();
     for key in [
@@ -103,6 +147,9 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
         "NODE_OPTIONS",
         "NPM_CONFIG_CACHE",
         "XDG_CACHE_HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
     ] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
@@ -112,7 +159,7 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
         .env("TERM", "dumb")
         .env("NO_COLOR", "1")
         .env("CI", "1");
-    if !spec.allow_network {
+    if !spec.allow_network && !isolate {
         for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             command.env(key, "http://127.0.0.1:9");
         }
@@ -132,6 +179,7 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
         }
     })?;
 
+    let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let cap = spec.max_output_bytes;
@@ -142,6 +190,7 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
     let status = child.wait_timeout(spec.timeout).map_err(GateError::Io)?;
     let timed_out = status.is_none();
     if timed_out {
+        kill_group(pid);
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -161,6 +210,16 @@ pub fn run(spec: &ProcessSpec) -> Result<ProcessOutput, GateError> {
         timed_out,
     })
 }
+
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pid: u32) {}
 
 fn read_capped(mut stream: impl Read, cap: usize) -> String {
     let mut collected: Vec<u8> = Vec::new();

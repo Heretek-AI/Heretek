@@ -7,6 +7,25 @@ use crate::profile::ModelProfile;
 
 pub const CONFIG_FILE: &str = ".heretek.toml";
 
+pub fn validate_git_ref(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("git ref must not be empty".to_string());
+    }
+    if value.starts_with('-') {
+        return Err(format!("git ref \"{value}\" must not start with '-'"));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(format!("git ref \"{value}\" must not contain whitespace"));
+    }
+    if value.contains("..") || value.contains('~') || value.contains('^') || value.contains(':') {
+        return Err(format!("git ref \"{value}\" contains forbidden characters"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HereConfig {
@@ -140,6 +159,9 @@ impl HereConfig {
             return Err(ConfigError::Invalid(
                 "agent.max_turns must be greater than zero".to_string(),
             ));
+        }
+        if let Some(baseline) = &self.gate.baseline {
+            validate_git_ref(baseline).map_err(ConfigError::Invalid)?;
         }
         for (name, profile) in &self.models {
             if profile.base_url.trim().is_empty() {

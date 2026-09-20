@@ -6,7 +6,10 @@ fn repo_root() -> std::path::PathBuf {
 }
 
 fn context() -> GateContext {
-    GateContext::new(repo_root(), Target::Staged)
+    GateContext::new(
+        repo_root(),
+        Target::Worktree(std::path::PathBuf::from("/tmp/heretek-test/tree")),
+    )
 }
 
 #[derive(Clone, Copy)]

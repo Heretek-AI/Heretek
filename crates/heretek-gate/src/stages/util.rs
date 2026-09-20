@@ -28,7 +28,7 @@ pub fn truncate(text: &str, max: usize) -> String {
 }
 
 pub fn parse_line_column(text: &str) -> (u32, u32) {
-    let mut parts = text.split(':');
+    let mut parts = text.split([',', ':']);
     let line = parts
         .next()
         .and_then(|v| v.trim().parse().ok())

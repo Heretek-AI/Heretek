@@ -6,8 +6,16 @@ use serde_json::Value;
 
 use crate::files;
 use crate::process::{ProcessSpec, run};
-use crate::stage::{GateContext, GateError, Stage, StageOutcome, Target};
+use crate::stage::{GateContext, GateError, Stage, StageOutcome};
 use crate::stages::util;
+
+const UNPARSEABLE: &str = "tool output could not be parsed (possibly truncated); increase gate.max_output_bytes or reduce scope";
+
+enum ConfigResolution {
+    Config(String),
+    RegistryRequiresNetwork,
+    None,
+}
 
 pub struct SecretsStage {
     program: Option<PathBuf>,
@@ -104,13 +112,31 @@ fn run_semgrep(
     if ctx.files.is_empty() {
         return Ok(StageOutcome::skipped("no changed files"));
     }
-    let Some(config) = resolve_config(ctx, registry_config) else {
-        return Ok(StageOutcome::skipped(
-            "no semgrep config and registry access requires network",
-        ));
+    let config = match resolve_config(ctx, registry_config) {
+        ConfigResolution::Config(config) => config,
+        ConfigResolution::RegistryRequiresNetwork => {
+            return Ok(StageOutcome::skipped(
+                "semgrep registry config requires network",
+            ));
+        }
+        ConfigResolution::None => {
+            return Ok(StageOutcome::skipped(
+                "no semgrep config and registry access requires network",
+            ));
+        }
     };
+    let files: Vec<String> = ctx
+        .files
+        .iter()
+        .filter(|file| !is_pathological(file))
+        .cloned()
+        .collect();
+    if files.is_empty() {
+        return Ok(StageOutcome::skipped(
+            "only pathological file names changed",
+        ));
+    }
 
-    let root = target_root(ctx);
     let mut args = vec![
         "scan".to_string(),
         "--json".to_string(),
@@ -120,9 +146,9 @@ fn run_semgrep(
         "--config".to_string(),
         config,
     ];
-    args.extend(ctx.files.iter().cloned());
+    args.extend(files);
 
-    let spec = ProcessSpec::new(program, &root)
+    let spec = ProcessSpec::new(program, ctx.target_root())
         .args(args)
         .timeout(timeout)
         .max_output_bytes(max_output)
@@ -134,8 +160,19 @@ fn run_semgrep(
         });
     }
 
+    if output.truncated(max_output) {
+        return Err(GateError::Failed {
+            message: UNPARSEABLE.to_string(),
+        });
+    }
+
     let parsed = parse_json(&output.stdout).or_else(|| parse_json(&output.stderr));
     let Some(value) = parsed else {
+        if !output.combined().trim().is_empty() {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
+        }
         if output.success() {
             return Ok(StageOutcome::passed());
         }
@@ -155,27 +192,37 @@ fn run_semgrep(
     Ok(StageOutcome::failed(diagnostics))
 }
 
-fn target_root(ctx: &GateContext) -> PathBuf {
-    match &ctx.target {
-        Target::Staged => ctx.repo_root.clone(),
-        Target::Worktree(path) => path.clone(),
-    }
+fn is_pathological(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.starts_with('-') || path.contains('\n')
 }
 
-fn resolve_config(ctx: &GateContext, registry_config: &str) -> Option<String> {
+fn is_registry_config(root: &Path, config: &str) -> bool {
+    let exists = root.join(config).exists();
+    !exists
+        && (config.starts_with("p/")
+            || config.starts_with("r/")
+            || config == "auto"
+            || config.starts_with("http"))
+}
+
+fn resolve_config(ctx: &GateContext, registry_config: &str) -> ConfigResolution {
     if let Some(config) = &ctx.config.semgrep_config {
-        return Some(config.clone());
+        if is_registry_config(ctx.target_root(), config) && !ctx.config.allow_network {
+            return ConfigResolution::RegistryRequiresNetwork;
+        }
+        return ConfigResolution::Config(config.clone());
     }
     for name in ["semgrep.yml", ".semgrep.yml"] {
-        let candidate = ctx.repo_root.join(name);
+        let candidate = ctx.target_root().join(name);
         if candidate.is_file() {
-            return Some(candidate.display().to_string());
+            return ConfigResolution::Config(candidate.display().to_string());
         }
     }
     if ctx.config.allow_network {
-        return Some(registry_config.to_string());
+        return ConfigResolution::Config(registry_config.to_string());
     }
-    None
+    ConfigResolution::None
 }
 
 fn parse_json(text: &str) -> Option<Value> {

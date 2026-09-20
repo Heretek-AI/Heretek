@@ -6,10 +6,11 @@ use serde_json::Value;
 
 use crate::files;
 use crate::process::{ProcessSpec, run};
-use crate::stage::{GateContext, GateError, Stage, StageOutcome, Target};
+use crate::stage::{GateContext, GateError, Stage, StageOutcome};
 use crate::stages::util;
 
 const GATE: &str = "ast-grep";
+const UNPARSEABLE: &str = "tool output could not be parsed (possibly truncated); increase gate.max_output_bytes or reduce scope";
 
 pub struct AstGrepStage {
     program: Option<PathBuf>,
@@ -48,13 +49,23 @@ impl Stage for AstGrepStage {
         let Some(rule_args) = rule_args(ctx) else {
             return Ok(StageOutcome::skipped("no ast-grep rules configured"));
         };
+        let files: Vec<String> = ctx
+            .files
+            .iter()
+            .filter(|file| !is_pathological(file))
+            .cloned()
+            .collect();
+        if files.is_empty() {
+            return Ok(StageOutcome::skipped(
+                "only pathological file names changed",
+            ));
+        }
 
-        let root = target_root(ctx);
         let mut args = vec!["scan".to_string(), "--json=compact".to_string()];
         args.extend(rule_args);
-        args.extend(ctx.files.iter().cloned());
+        args.extend(files);
 
-        let spec = ProcessSpec::new(program, &root)
+        let spec = ProcessSpec::new(program, ctx.target_root())
             .args(args)
             .timeout(self.timeout)
             .max_output_bytes(self.max_output)
@@ -66,8 +77,19 @@ impl Stage for AstGrepStage {
             });
         }
 
+        if output.truncated(self.max_output) {
+            return Err(GateError::Failed {
+                message: UNPARSEABLE.to_string(),
+            });
+        }
+
         let parsed = parse_json(&output.stdout).or_else(|| parse_json(&output.stderr));
         let Some(value) = parsed else {
+            if !output.combined().trim().is_empty() {
+                return Err(GateError::Failed {
+                    message: UNPARSEABLE.to_string(),
+                });
+            }
             if output.success() {
                 return Ok(StageOutcome::passed());
             }
@@ -94,11 +116,9 @@ impl Stage for AstGrepStage {
     }
 }
 
-fn target_root(ctx: &GateContext) -> PathBuf {
-    match &ctx.target {
-        Target::Staged => ctx.repo_root.clone(),
-        Target::Worktree(path) => path.clone(),
-    }
+fn is_pathological(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.starts_with('-') || path.contains('\n')
 }
 
 fn rule_args(ctx: &GateContext) -> Option<Vec<String>> {
@@ -106,11 +126,11 @@ fn rule_args(ctx: &GateContext) -> Option<Vec<String>> {
         let path = if path.is_absolute() {
             path.clone()
         } else {
-            ctx.repo_root.join(path)
+            ctx.target_root().join(path)
         };
         return rule_args_for_path(&path);
     }
-    let config = ctx.repo_root.join("sgconfig.yml");
+    let config = ctx.target_root().join("sgconfig.yml");
     if config.is_file() {
         return Some(vec!["--config".to_string(), config.display().to_string()]);
     }
